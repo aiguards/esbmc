@@ -4,6 +4,9 @@
 #include <fstream>
 #include <goto-programs/goto_program.h>
 #include <goto-symex/symex_target.h>
+#include <util/namespace.h>
+#include <util/std_expr.h>
+#include <util/message.h>
 
 #include <map>
 #include <irep2/irep2.h>
@@ -33,7 +36,7 @@ public:
   std::map<irep_idt, expr2tc> inputs;
   std::vector<unsigned> lines_executed;
   std::vector<line_state_t> line_states;
-  std::vector<goto_trace_stept> assertions;
+  std::list<goto_trace_stept> assertions;
 };
 
 class goto_trace_stept
