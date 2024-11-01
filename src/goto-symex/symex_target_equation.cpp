@@ -488,41 +488,46 @@ void runtime_encoded_equationt::pop_ctx()
 }
 
 void symex_target_equationt::build_goto_trace(
-  const std::vector<symex_target_equationt::SSA_stept> &steps,
-  const namespacet &ns,
-  goto_tracet &dest) const
+  const std::vector<SSA_stept>& steps,
+  const namespacet& ns,
+  goto_tracet& dest) const
 {
-  // Initialize current test case
   dest.current_test.path_id = dest.test_cases.size() + 1;
   
-  // Process each step
-  for(const auto &step : steps)
+  for(const auto& step : steps)
   {
-    // Record line number
-    unsigned line = step.source.pc->location.get_line();
+    const irep_idt &line_no = step.source.pc->location.get_line();
+    unsigned line = std::stoul(line_no.as_string());
     dest.current_test.lines_executed.push_back(line);
     
-    // Create new line state
     test_case_data_t::line_state_t line_state;
     line_state.line_number = line;
     
-    // Handle inputs
-    if(step.is_input())
-    {
-      dest.current_test.inputs[step.ssa_lhs.get_identifier()] = step.ssa_rhs;
-    }
-    
-    // Record variables
-    if(step.is_assignment() || step.is_assert || step.is_assume)
+    if(step.is_assignment() || step.is_assert() || step.is_assume())
     {
       test_case_data_t::variable_state_t var_state;
-      var_state.name = step.ssa_lhs.get_identifier();
-      var_state.value = step.ssa_rhs;
+
+      // Get symbol name from assignment
+      if(step.is_assignment() && step.lhs) // Use operator bool()
+      {
+        if(is_symbol2t(step.lhs))
+          var_state.name = to_symbol2t(step.lhs).thename;
+      }
       
-      if(step.is_assert || step.is_assume)
+      // Set value from assignment or condition
+      if(step.is_assignment())
+      {
+        var_state.value = step.rhs;
+      }
+      else if(step.cond) // Use operator bool()
+      {
+        var_state.value = step.cond;
+      }
+      
+      if(step.is_assert() || step.is_assume())
       {
         var_state.is_condition = true;
-        var_state.condition_result = step.cond_value.is_true();
+        var_state.condition_result = step.guard.operator bool();
       }
       
       line_state.variables.push_back(var_state);
@@ -530,19 +535,22 @@ void symex_target_equationt::build_goto_trace(
     
     dest.current_test.line_states.push_back(line_state);
     
-    // Record assertions
-    if(step.is_assert)
+    if(step.is_assert())
     {
       goto_trace_stept trace_step;
-      trace_step.type = goto_trace_stept::typet::ASSERT;
+      trace_step.type = goto_trace_stept::ASSERT;
       trace_step.pc = step.source.pc;
-      trace_step.cond_expr = step.cond_expr;
-      trace_step.cond_value = step.cond_value;
+      
+      if(step.cond) // Use operator bool()
+      {
+        trace_step.cond_expr = step.cond;
+        trace_step.guard = step.guard.operator bool();
+      }
+      
       dest.current_test.assertions.push_back(trace_step);
     }
   }
   
-  // Add completed test case
   dest.test_cases.push_back(dest.current_test);
 }
 

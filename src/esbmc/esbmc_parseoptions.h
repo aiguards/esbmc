@@ -95,6 +95,8 @@ protected:
 
 private:
   const char* OPT_GENERATE_TESTS = "generate-test-cases";
+  symex_target_equationt equation;
+  goto_tracet goto_trace;
 
   void close_file(FILE *f)
   {

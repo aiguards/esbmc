@@ -19,6 +19,9 @@ class goto_trace_stept
 public:
   unsigned step_nr;
   std::vector<stack_framet> stack_trace;
+   // Add these new members
+  expr2tc cond_expr;  // For assertions
+  expr2tc cond_value; // For assertion results
 
   typedef enum
   {
@@ -65,6 +68,9 @@ public:
   {
     return type == RENUMBER;
   }
+
+  // Fix the function calls
+  bool is_input() const { return false; }
 
   void output(const class namespacet &ns, std::ostream &out) const;
   void dump() const;

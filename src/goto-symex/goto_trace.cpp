@@ -25,14 +25,13 @@ void goto_trace_stept::dump() const
 }
 
 void goto_tracet::output_test_case(
-  const namespacet &ns,
-  std::ostream &out) const
+  const namespacet& ns,
+  std::ostream& out) const
 {
   for(const auto& test_case : test_cases)
   {
     out << "BEGIN_PATH " << test_case.path_id << "\n";
     
-    // Output inputs
     out << "  INPUT:\n";
     for(const auto& input : test_case.inputs)
     {
@@ -40,14 +39,12 @@ void goto_tracet::output_test_case(
       out << from_expr(ns, "", input.second) << "\n";
     }
     
-    // Output executed lines
     out << "  LINES_EXECUTED:\n";
     for(const auto& line : test_case.lines_executed)
     {
       out << "    " << line << "\n";
     }
     
-    // Output variable states
     out << "  VARIABLE_STATES:\n";
     for(const auto& state : test_case.line_states)
     {
@@ -61,15 +58,14 @@ void goto_tracet::output_test_case(
       }
     }
     
-    // Output assertions
     out << "  ASSERTIONS:\n";
     for(const auto& step : test_case.assertions)
     {
-      if(step.is_assert)
+      if(step.is_assert())
       {
         out << "    LINE " << step.pc->location.get_line() << ":\n";
         out << "      assert(" << from_expr(ns, "", step.cond_expr) << ")\n";
-        out << "      status=" << (step.cond_value.is_true() ? "PASS" : "FAIL") << "\n";
+        out << "      status=" << (step.guard ? "PASS" : "FAIL") << "\n";
       }
     }
     

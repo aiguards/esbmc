@@ -53,6 +53,8 @@ extern "C"
 #include <util/symbol.h>
 #include <util/time_stopping.h>
 #include <goto-programs/goto_cfg.h>
+#include <goto-symex/goto_trace.h>
+#include <goto-symex/symex_target_equation.h>
 
 #ifndef _WIN32
 #  include <sys/wait.h>
@@ -520,8 +522,9 @@ int esbmc_parseoptionst::doit()
     messaget::state.out = f;
   }
 
-  if(options.get_bool_option("generate-test-cases"))
+  if(cmdline.isset("generate-test-cases"))
   {
+    namespacet ns(context);  // Make sure ns is initialized
     equation.SSA_steps.build_goto_trace(equation.SSA_steps, ns, goto_trace);
     goto_trace.output_test_case(ns, std::cout);
   }
