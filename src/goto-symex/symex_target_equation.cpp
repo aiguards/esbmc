@@ -487,6 +487,65 @@ void runtime_encoded_equationt::pop_ctx()
   assumpt_chain.pop_back();
 }
 
+void symex_target_equationt::build_goto_trace(
+  const std::vector<symex_target_equationt::SSA_stept> &steps,
+  const namespacet &ns,
+  goto_tracet &dest) const
+{
+  // Initialize current test case
+  dest.current_test.path_id = dest.test_cases.size() + 1;
+  
+  // Process each step
+  for(const auto &step : steps)
+  {
+    // Record line number
+    unsigned line = step.source.pc->location.get_line();
+    dest.current_test.lines_executed.push_back(line);
+    
+    // Create new line state
+    test_case_data_t::line_state_t line_state;
+    line_state.line_number = line;
+    
+    // Handle inputs
+    if(step.is_input())
+    {
+      dest.current_test.inputs[step.ssa_lhs.get_identifier()] = step.ssa_rhs;
+    }
+    
+    // Record variables
+    if(step.is_assignment() || step.is_assert || step.is_assume)
+    {
+      test_case_data_t::variable_state_t var_state;
+      var_state.name = step.ssa_lhs.get_identifier();
+      var_state.value = step.ssa_rhs;
+      
+      if(step.is_assert || step.is_assume)
+      {
+        var_state.is_condition = true;
+        var_state.condition_result = step.cond_value.is_true();
+      }
+      
+      line_state.variables.push_back(var_state);
+    }
+    
+    dest.current_test.line_states.push_back(line_state);
+    
+    // Record assertions
+    if(step.is_assert)
+    {
+      goto_trace_stept trace_step;
+      trace_step.type = goto_trace_stept::typet::ASSERT;
+      trace_step.pc = step.source.pc;
+      trace_step.cond_expr = step.cond_expr;
+      trace_step.cond_value = step.cond_value;
+      dest.current_test.assertions.push_back(trace_step);
+    }
+  }
+  
+  // Add completed test case
+  dest.test_cases.push_back(dest.current_test);
+}
+
 void runtime_encoded_equationt::convert(smt_convt &smt_conv)
 {
   // Don't actually convert. We've already done most of the conversion by now

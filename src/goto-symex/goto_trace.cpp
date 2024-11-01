@@ -24,6 +24,59 @@ void goto_trace_stept::dump() const
   log_debug("goto-trace", "{}", oss.str());
 }
 
+void goto_tracet::output_test_case(
+  const namespacet &ns,
+  std::ostream &out) const
+{
+  for(const auto& test_case : test_cases)
+  {
+    out << "BEGIN_PATH " << test_case.path_id << "\n";
+    
+    // Output inputs
+    out << "  INPUT:\n";
+    for(const auto& input : test_case.inputs)
+    {
+      out << "    " << input.first << "=";
+      out << from_expr(ns, "", input.second) << "\n";
+    }
+    
+    // Output executed lines
+    out << "  LINES_EXECUTED:\n";
+    for(const auto& line : test_case.lines_executed)
+    {
+      out << "    " << line << "\n";
+    }
+    
+    // Output variable states
+    out << "  VARIABLE_STATES:\n";
+    for(const auto& state : test_case.line_states)
+    {
+      out << "    LINE " << state.line_number << ":\n";
+      for(const auto& var : state.variables)
+      {
+        out << "      " << var.name << "=";
+        out << from_expr(ns, "", var.value) << "\n";
+        if(var.is_condition)
+          out << "      condition=" << (var.condition_result ? "true" : "false") << "\n";
+      }
+    }
+    
+    // Output assertions
+    out << "  ASSERTIONS:\n";
+    for(const auto& step : test_case.assertions)
+    {
+      if(step.is_assert)
+      {
+        out << "    LINE " << step.pc->location.get_line() << ":\n";
+        out << "      assert(" << from_expr(ns, "", step.cond_expr) << ")\n";
+        out << "      status=" << (step.cond_value.is_true() ? "PASS" : "FAIL") << "\n";
+      }
+    }
+    
+    out << "END_PATH\n\n";
+  }
+}
+
 void goto_trace_stept::output(const namespacet &ns, std::ostream &out) const
 {
   switch (type)

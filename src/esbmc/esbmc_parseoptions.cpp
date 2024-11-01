@@ -301,6 +301,10 @@ void esbmc_parseoptionst::get_command_line_options(optionst &options)
     exit(0);
   }
 
+  if(cmdline.isset(OPT_GENERATE_TESTS)) {
+    options.set_option("generate-test-cases", true);
+  }
+
   if (cmdline.isset("list-solvers"))
   {
     // Generated for us by autoconf,
@@ -514,6 +518,12 @@ int esbmc_parseoptionst::doit()
     /* TODO: handle failure */
     out = f;
     messaget::state.out = f;
+  }
+
+  if(options.get_bool_option("generate-test-cases"))
+  {
+    equation.SSA_steps.build_goto_trace(equation.SSA_steps, ns, goto_trace);
+    goto_trace.output_test_case(ns, std::cout);
   }
 
   // Print a banner

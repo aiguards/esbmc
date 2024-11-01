@@ -12,6 +12,30 @@
 #include <vector>
 #include <string_view>
 
+class test_case_data_t
+{
+public:
+  struct variable_state_t 
+  {
+    irep_idt name;
+    expr2tc value;
+    bool is_condition{false};
+    bool condition_result{false};
+  };
+
+  struct line_state_t
+  {
+    unsigned line_number;
+    std::vector<variable_state_t> variables;
+  };
+
+  unsigned path_id{0};
+  std::map<irep_idt, expr2tc> inputs;
+  std::vector<unsigned> lines_executed;
+  std::vector<line_state_t> line_states;
+  std::vector<goto_trace_stept> assertions;
+};
+
 class goto_trace_stept
 {
 public:
@@ -95,6 +119,13 @@ public:
   typedef std::map<std::string, std::string, std::less<std::string>> mid;
   stepst steps;
   std::string mode;
+
+  std::vector<test_case_data_t> test_cases;
+  test_case_data_t current_test;
+
+  void output_test_case(
+    const namespacet &ns,
+    std::ostream &out) const;
 
   void clear()
   {

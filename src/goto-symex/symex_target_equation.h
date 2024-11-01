@@ -27,6 +27,11 @@ public:
     ssa_smt_trace = config.options.get_bool_option("ssa-smt-trace");
   }
 
+  void build_goto_trace(
+    const std::vector<symex_target_equationt::SSA_stept> &steps,
+    const namespacet &ns,
+    goto_tracet &dest) const;
+
   // assignment to a variable - must be symbol
   // the value is destroyed
   void assignment(

@@ -17,6 +17,7 @@ class esbmc_parseoptionst : public parseoptions_baset, public language_uit
 public:
   int doit() override;
   void help() override;
+  
 
   esbmc_parseoptionst(int argc, const char **argv)
     : parseoptions_baset(all_cmd_options, argc, argv)
@@ -93,6 +94,8 @@ protected:
     goto_preprocess_algorithms;
 
 private:
+  const char* OPT_GENERATE_TESTS = "generate-test-cases";
+
   void close_file(FILE *f)
   {
     if (f != stdout && f != stderr)
