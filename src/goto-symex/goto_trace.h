@@ -7,7 +7,6 @@
 #include <util/namespace.h>
 #include <util/std_expr.h>
 #include <util/message.h>
-
 #include <map>
 #include <irep2/irep2.h>
 #include <util/migrate.h>
@@ -15,37 +14,32 @@
 #include <vector>
 #include <string_view>
 
-class test_case_data_t
-{
-public:
-  struct variable_state_t 
-  {
-    irep_idt name;
-    expr2tc value;
-    bool is_condition{false};
-    bool condition_result{false};
-  };
-
-  struct line_state_t
-  {
-    unsigned line_number;
-    std::vector<variable_state_t> variables;
-  };
-
-  unsigned path_id{0};
-  std::map<irep_idt, expr2tc> inputs;
-  std::vector<unsigned> lines_executed;
-  std::vector<line_state_t> line_states;
-  std::list<goto_trace_stept> assertions;
-};
-
 class goto_trace_stept
 {
 public:
   unsigned step_nr;
-
-  // See SSA_stept.
   std::vector<stack_framet> stack_trace;
+
+  typedef enum
+  {
+    ASSIGNMENT,
+    ASSUME,
+    ASSERT,
+    OUTPUT,
+    SKIP,
+    RENUMBER
+  } typet;
+
+  typet type;
+  goto_programt::const_targett pc;
+  unsigned thread_nr;
+  bool guard;
+  std::string comment;
+  expr2tc lhs, rhs;
+  expr2tc value;
+  expr2tc original_lhs;
+  std::string format_string;
+  std::list<expr2tc> output_args;
 
   bool is_assignment() const
   {
@@ -72,41 +66,6 @@ public:
     return type == RENUMBER;
   }
 
-  typedef enum
-  {
-    ASSIGNMENT,
-    ASSUME,
-    ASSERT,
-    OUTPUT,
-    SKIP,
-    RENUMBER
-  } typet;
-  typet type;
-
-  goto_programt::const_targett pc;
-
-  // this transition done by given thread number
-  unsigned thread_nr;
-
-  // for assume, assert, goto
-  bool guard;
-
-  // for assert
-  std::string comment;
-
-  // in SSA
-  expr2tc lhs, rhs;
-
-  // this is a constant
-  expr2tc value;
-
-  // original expression
-  expr2tc original_lhs;
-
-  // for OUTPUT
-  std::string format_string;
-  std::list<expr2tc> output_args;
-
   void output(const class namespacet &ns, std::ostream &out) const;
   void dump() const;
 
@@ -115,28 +74,61 @@ public:
   }
 };
 
+class test_case_data_t
+{
+public:
+  struct variable_state_t 
+  {
+    irep_idt name;
+    expr2tc value;
+    bool is_condition{false};
+    bool condition_result{false};
+  };
+
+  struct line_state_t
+  {
+    unsigned line_number;
+    std::vector<variable_state_t> variables;
+  };
+
+  unsigned path_id{0};
+  std::map<irep_idt, expr2tc> inputs;
+  std::vector<unsigned> lines_executed;
+  std::vector<line_state_t> line_states;
+  std::list<goto_trace_stept> assertions;
+
+  void output(const namespacet &ns, std::ostream &out) const;
+  void clear()
+  {
+    path_id = 0;
+    inputs.clear();
+    lines_executed.clear();
+    line_states.clear();
+    assertions.clear();
+  }
+};
+
 class goto_tracet
 {
 public:
   typedef std::list<goto_trace_stept> stepst;
   typedef std::map<std::string, std::string, std::less<std::string>> mid;
+
   stepst steps;
   std::string mode;
-
   std::vector<test_case_data_t> test_cases;
   test_case_data_t current_test;
-
-  void output_test_case(
-    const namespacet &ns,
-    std::ostream &out) const;
 
   void clear()
   {
     mode.clear();
     steps.clear();
+    test_cases.clear();
+    current_test.clear();
   }
 
   void output(const class namespacet &ns, std::ostream &out) const;
+  void output_test_case(const namespacet &ns, std::ostream &out) const;
 };
 
 void show_goto_trace_gui(
