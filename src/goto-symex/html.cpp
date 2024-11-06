@@ -20,6 +20,10 @@
 #include <iostream>
 #include <util/type_byte_size.h>
 #include <util/expr_util.h>
+#include <irep2/irep2_expr.h>
+#include <util/std_expr.h>
+#include <util/mp_arith.h>
+#include <memory>
 
 using json = nlohmann::json;
 
@@ -803,53 +807,65 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
     std::string result;
     
-    // Handle null pointers
     if(is_nil_expr(expr)) {
         return "NULL";
     }
+
+    // Get actual type and handle pointer dereferencing
+    type2tc actual_type;
+    expr2tc actual_expr = expr;
     
-    // If it's a struct
-    if(is_struct_type(expr->type)) {
-        const struct_type2t& struct_type = to_struct_type(expr->type);
-        
+    if(is_pointer_type(expr->type)) {
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+        actual_type = ptr_type.subtype;
+        actual_expr = expr2tc(std::make_shared<dereference2t>(actual_type, expr));
+    } else {
+        actual_type = expr->type;
+    }
+
+    if(is_struct_type(actual_type)) {
+        const struct_type2t& struct_type = to_struct_type(actual_type);
         result += "{";
         bool first = true;
-        
-        // Iterate through struct members
+
+        // Iterate through all struct members
         for(size_t i = 0; i < struct_type.members.size(); i++) {
             if(!first) result += ", ";
             first = false;
             
-            // Convert dstring to std::string using id2string
-            const irep_idt& component_name = struct_type.member_names[i];
+            const irep_idt& member_name = struct_type.member_names[i];
             const type2tc& member_type = struct_type.members[i];
             
-            result += id2string(component_name) + ": ";
+            result += id2string(member_name) + ": ";
             
             try {
-                // Create member expression
-                expr2tc member_expr = member2tc(
+                // Create member expression using shared_ptr
+                expr2tc member_expr = expr2tc(std::make_shared<member2t>(
                     member_type,
-                    expr,
-                    struct_type.member_names[i]
-                );
+                    actual_expr,
+                    member_name));
                 
-                // Recursively handle nested structs
+                if(is_nil_expr(member_expr)) {
+                    result += "NULL";
+                    continue;
+                }
+
                 if(is_struct_type(member_type)) {
                     result += get_struct_values(ns, member_expr);
                 }
-                // Handle primitive types
-                else if(is_number_type(member_type) || 
-                        is_bool_type(member_type)) {
-                    result += from_expr(ns, "", member_expr);
-                }
-                // Handle arrays and strings
                 else if(is_array_type(member_type)) {
                     result += "\"" + from_expr(ns, "", member_expr) + "\"";
                 }
                 else {
-                    // For other types, just use regular expression conversion 
-                    result += from_expr(ns, "", member_expr);
+                    if(is_constant_int2t(member_expr)) {
+                        result += integer2string(to_constant_int2t(member_expr).value);
+                    }
+                    else if(is_constant_bool2t(member_expr)) {
+                        result += to_constant_bool2t(member_expr).value ? "true" : "false";
+                    }
+                    else {
+                        result += from_expr(ns, "", member_expr);
+                    }
                 }
             }
             catch(const std::runtime_error& e) {
@@ -858,20 +874,12 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
             }
         }
         result += "}";
-    }
-    // Handle primitive types directly
-    else if(is_number_type(expr->type) || is_bool_type(expr->type)) {
-        result = from_expr(ns, "", expr);
-    }
-    // For other types, use default conversion
-    else {
-        result = from_expr(ns, "", expr);
+        return result;
     }
     
-    return result;
+    return from_expr(ns, "", expr);
 }
 
-// Helper function to get assignment message
 std::string get_assignment_message(const namespacet& ns, 
                                  const expr2tc& lhs, 
                                  const expr2tc& value) {
@@ -883,17 +891,9 @@ std::string get_assignment_message(const namespacet& ns,
     
     msg += " = ";
     
-    // If lhs is a pointer to struct, recursively get values
-    if(is_pointer_type(lhs->type)) {
-        const pointer_type2t& ptr_type = to_pointer_type(lhs->type);
-        if(is_struct_type(ptr_type.subtype)) {
-            msg += get_struct_values(ns, value);
-        } else {
-            msg += from_expr(ns, "", value);
-        }
-    }
-    // Otherwise use normal expression conversion
-    else {
+    if(is_pointer_type(value->type) || is_struct_type(value->type)) {
+        msg += get_struct_values(ns, value);
+    } else {
         msg += from_expr(ns, "", value);
     }
     
@@ -959,20 +959,16 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
                     step_data["function"] = function;
                     step_data["step_number"] = step_count++;
 
-                    // Capture initial values before any modifications
+                    // Inside add_coverage_to_json where initial values are captured
                     if(!initial_state_captured && step.is_assignment()) {
                         std::string var_name = from_expr(ns, "", step.lhs);
                         
                         if(processed_vars.find(var_name) == processed_vars.end()) {
                             processed_vars.insert(var_name);
                             
-                            if(is_pointer_type(step.lhs->type)) {
-                                const pointer_type2t& ptr_type = to_pointer_type(step.lhs->type);
-                                if(is_struct_type(ptr_type.subtype)) {
-                                    initial_values[var_name] = json::parse(get_struct_values(ns, step.value));
-                                } else {
-                                    initial_values[var_name] = from_expr(ns, "", step.value);
-                                }
+                            // Handle based on type
+                            if(is_pointer_type(step.value->type) || is_struct_type(step.value->type)) {
+                                initial_values[var_name] = json::parse(get_struct_values(ns, step.value));
                             } else {
                                 initial_values[var_name] = from_expr(ns, "", step.value);
                             }
