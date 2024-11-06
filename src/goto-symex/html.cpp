@@ -18,6 +18,8 @@
 #include <vector>
 #include <numeric>
 #include <iostream>
+#include <util/type_byte_size.h>
+#include <util/expr_util.h>
 
 using json = nlohmann::json;
 
@@ -798,93 +800,190 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
     return headers;
 }
 
-void add_coverage_to_json(
-  const goto_tracet &goto_trace,
-  const namespacet &ns)
-{
+std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
+    std::string result;
+    
+    // Handle null pointers
+    if(is_nil_expr(expr)) {
+        return "NULL";
+    }
+    
+    // If it's a struct
+    if(is_struct_type(expr->type)) {
+        const struct_type2t& struct_type = to_struct_type(expr->type);
+        
+        result += "{";
+        bool first = true;
+        
+        // Iterate through struct members
+        for(size_t i = 0; i < struct_type.members.size(); i++) {
+            if(!first) result += ", ";
+            first = false;
+            
+            // Convert dstring to std::string using id2string
+            const irep_idt& component_name = struct_type.member_names[i];
+            const type2tc& member_type = struct_type.members[i];
+            
+            result += id2string(component_name) + ": ";
+            
+            try {
+                // Create member expression
+                expr2tc member_expr = member2tc(
+                    member_type,
+                    expr,
+                    struct_type.member_names[i]
+                );
+                
+                // Recursively handle nested structs
+                if(is_struct_type(member_type)) {
+                    result += get_struct_values(ns, member_expr);
+                }
+                // Handle primitive types
+                else if(is_number_type(member_type) || 
+                        is_bool_type(member_type)) {
+                    result += from_expr(ns, "", member_expr);
+                }
+                // Handle arrays and strings
+                else if(is_array_type(member_type)) {
+                    result += "\"" + from_expr(ns, "", member_expr) + "\"";
+                }
+                else {
+                    // For other types, just use regular expression conversion 
+                    result += from_expr(ns, "", member_expr);
+                }
+            }
+            catch(const std::runtime_error& e) {
+                result += "<error>";
+                continue;
+            }
+        }
+        result += "}";
+    }
+    // Handle primitive types directly
+    else if(is_number_type(expr->type) || is_bool_type(expr->type)) {
+        result = from_expr(ns, "", expr);
+    }
+    // For other types, use default conversion
+    else {
+        result = from_expr(ns, "", expr);
+    }
+    
+    return result;
+}
+
+// Helper function to get assignment message
+std::string get_assignment_message(const namespacet& ns, 
+                                 const expr2tc& lhs, 
+                                 const expr2tc& value) {
+    std::string msg = from_expr(ns, "", lhs);
+    
+    if(is_nil_expr(value)) {
+        return msg + " (assignment removed)";
+    }
+    
+    msg += " = ";
+    
+    // If lhs is a pointer to struct, recursively get values
+    if(is_pointer_type(lhs->type)) {
+        const pointer_type2t& ptr_type = to_pointer_type(lhs->type);
+        if(is_struct_type(ptr_type.subtype)) {
+            msg += get_struct_values(ns, value);
+        } else {
+            msg += from_expr(ns, "", value);
+        }
+    }
+    // Otherwise use normal expression conversion
+    else {
+        msg += from_expr(ns, "", value);
+    }
+    
+    return msg;
+}
+
+void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
     json test_entry;
     test_entry["steps"] = json::array();
     test_entry["status"] = "unknown";
     test_entry["coverage"] = {{"files", json::object()}};
     
+    // Add initial values tracking
+    json initial_values = json::object();
+    bool initial_state_captured = false;
+    
+    // Structure for tracking line hits
     std::map<std::string, std::map<int, int>> line_hits;
     std::set<std::pair<std::string, int>> violations;
     std::set<std::string> all_referenced_files;
     std::set<std::string> processed_files;
+    std::set<std::string> processed_vars;
+    
     size_t step_count = 0;
     bool found_violation = false;
 
-    // First pass - collect all referenced files and their headers
-    for(const auto &step : goto_trace.steps)
-    {
-        if(step.pc != goto_programt::const_targett() && !step.pc->location.is_nil())
-        {
-            try {
-                const locationt &loc = step.pc->location;
-                std::string file = id2string(loc.get_file());
-                
-                if(!file.empty() && file.find("/usr/") != 0) { // Only skip /usr paths
-                    // Add the source file
-                    all_referenced_files.insert(file);
-                    
-                    // Find and add all included headers
-                    auto included_headers = find_included_headers(file, processed_files);
-                    all_referenced_files.insert(included_headers.begin(), included_headers.end());
-                }
-            } catch(...) {
-                continue;
+    // First pass - collect referenced files
+    for(const auto &step : goto_trace.steps) {
+        if(step.pc != goto_programt::const_targett() && !step.pc->location.is_nil()) {
+            const locationt &loc = step.pc->location;
+            std::string file = id2string(loc.get_file());
+            
+            if(!file.empty() && file.find("/usr/") != 0) {
+                all_referenced_files.insert(file);
+                auto included_headers = find_included_headers(file, processed_files);
+                all_referenced_files.insert(included_headers.begin(), included_headers.end());
             }
         }
     }
 
-    // Process all steps to track execution
-    for(const auto &step : goto_trace.steps)
-    {
-        if(step.pc != goto_programt::const_targett() && !step.pc->location.is_nil())
-        {
+    // Process all steps
+    for(const auto &step : goto_trace.steps) {
+        if(step.pc != goto_programt::const_targett() && !step.pc->location.is_nil()) {
+            const locationt &loc = step.pc->location;
+            std::string file = id2string(loc.get_file());
+            
+            if(file.find("/usr/") == 0) 
+                continue;
+            
+            std::string line_str = id2string(loc.get_line());
+            std::string function = id2string(loc.get_function());
+            
             try {
-                const locationt &loc = step.pc->location;
-                std::string file = id2string(loc.get_file());
-                if (file.find("/usr/") == 0) continue; // Skip /usr paths
-                
-                std::string line_str = id2string(loc.get_line());
-                std::string function = id2string(loc.get_function());
                 int line = std::stoi(line_str);
-
+                
                 if(line > 0) {
-                    // Track all line hits
+                    // Track line hits
                     line_hits[file][line]++;
 
-                    // Track violations separately
-                    if(step.is_assert() && !step.guard) {
-                        violations.insert({file, line});
-                        found_violation = true;
-                    }
-
-                    // Add step info
                     json step_data;
-                    step_data["file"] = file; 
+                    step_data["file"] = file;
                     step_data["line"] = line_str;
                     step_data["function"] = function;
                     step_data["step_number"] = step_count++;
 
-                    // Add right before the if-else chain for type checking
-                    std::cout << "Step info for " << function << ":" << std::endl;
-                    std::cout << "is_function_call: " << step.pc->is_function_call() << std::endl;
-                    std::cout << "is_assignment: " << step.is_assignment() << std::endl;
-                    std::cout << "is_assert: " << step.is_assert() << std::endl;
-                    std::cout << "is_assume: " << step.is_assume() << std::endl;
+                    // Capture initial values before any modifications
+                    if(!initial_state_captured && step.is_assignment()) {
+                        std::string var_name = from_expr(ns, "", step.lhs);
+                        
+                        if(processed_vars.find(var_name) == processed_vars.end()) {
+                            processed_vars.insert(var_name);
+                            
+                            if(is_pointer_type(step.lhs->type)) {
+                                const pointer_type2t& ptr_type = to_pointer_type(step.lhs->type);
+                                if(is_struct_type(ptr_type.subtype)) {
+                                    initial_values[var_name] = json::parse(get_struct_values(ns, step.value));
+                                } else {
+                                    initial_values[var_name] = from_expr(ns, "", step.value);
+                                }
+                            } else {
+                                initial_values[var_name] = from_expr(ns, "", step.value);
+                            }
+                        }
+                    }
 
-                    // Print the instruction type directly
-                    std::cout << "Instruction type: " << step.pc->type << std::endl;
-
-                    // And let's see the actual code being executed
-                    std::cout << "Code: " << from_expr(ns, "", step.pc->code) << std::endl;
-                    std::cout << "Full location: " << step.pc->location << std::endl;
-                    
-                    // Add step type and details
+                    // Handle different step types
                     if(step.is_assert()) {
                         if(!step.guard) {
+                            violations.insert({file, line});
+                            found_violation = true;
                             step_data["type"] = "violation";
                             step_data["message"] = step.comment.empty() ? "Assertion check" : step.comment;
                             test_entry["status"] = "violation";
@@ -902,17 +1001,10 @@ void add_coverage_to_json(
                         step_data["message"] = "Assumption restriction";
                     }
                     else if(step.is_assignment()) {
-                        step_data["type"] = "assignment"; 
-                        std::string msg = from_expr(ns, "", step.lhs);
-                        if(is_nil_expr(step.value)) {
-                            msg += " (assignment removed)";
-                        } else {
-                            msg += " = " + from_expr(ns, "", step.value);
-                        }
-                        step_data["message"] = msg;
+                        step_data["type"] = "assignment";
+                        step_data["message"] = get_assignment_message(ns, step.lhs, step.value);
                     }
-                    else if(step.pc->is_function_call() || 
-                            (step.pc->type == goto_program_instruction_typet::FUNCTION_CALL)) {
+                    else if(step.pc->is_function_call()) {  // Changed from step.is_function_call()
                         step_data["type"] = "function_call";
                         step_data["message"] = fmt::format(
                             "Function argument '{}' = '{}'",
@@ -925,20 +1017,30 @@ void add_coverage_to_json(
 
                     test_entry["steps"].push_back(step_data);
                 }
-            } catch(...) {
+            } catch(std::exception& e) {
+                std::cerr << "Error processing step: " << e.what() << std::endl;
                 continue;
             }
         }
+        
+        // Mark initial state as captured after processing first few steps
+        if(step_count > 3) {
+            initial_state_captured = true;
+        }
     }
 
-    // If we haven't found a violation, mark as success
+    // Add initial values to test entry
+    test_entry["initial_values"] = initial_values;
+
+    // Set status if no violation found
     if(!found_violation && test_entry["status"] == "unknown") {
         test_entry["status"] = "success";
     }
 
-    // Build coverage data for all files including headers (except /usr)
+    // Build coverage data
     for(const auto& file : all_referenced_files) {
-        if (file.find("/usr/") == 0) continue; // Skip /usr paths
+        if(file.find("/usr/") == 0) 
+            continue;
         
         json file_coverage;
         file_coverage["covered_lines"] = json::object();
@@ -970,16 +1072,18 @@ void add_coverage_to_json(
         test_entry["coverage"]["files"][file] = file_coverage;
     }
 
-    // Track source code on first write
+    // Handle source files tracking
     if(first_write) {
         for(const auto& file : all_referenced_files) {
-            if (file.find("/usr/") == 0) continue; // Skip /usr paths
+            if(file.find("/usr/") == 0) 
+                continue;
             
             if(source_files.find(file) == source_files.end()) {
                 try {
                     const auto& file_lines = html_report::get_file_lines(file);
                     source_files[file] = std::vector<std::string>(file_lines.begin(), file_lines.end());
-                } catch(...) {
+                } catch(std::exception& e) {
+                    std::cerr << "Error reading file " << file << ": " << e.what() << std::endl;
                     source_files[file] = std::vector<std::string>();
                 }
             }
@@ -995,14 +1099,15 @@ void add_coverage_to_json(
     // Read existing JSON if not first write
     json all_tests;
     if(!first_write) {
-        try {
-            std::ifstream input("report.json");
-            if(input.is_open()) {
+        std::ifstream input("report.json");
+        if(input.is_open()) {
+            try {
                 input >> all_tests;
-            } else {
+            } catch(json::parse_error& e) {
+                std::cerr << "Error parsing existing report.json: " << e.what() << std::endl;
                 all_tests = json::array();
             }
-        } catch(...) {
+        } else {
             all_tests = json::array();
         }
     } else {
@@ -1015,6 +1120,8 @@ void add_coverage_to_json(
     if(json_out.is_open()) {
         json_out << std::setw(2) << all_tests << std::endl;
         first_write = false;
+    } else {
+        std::cerr << "Error: Could not open report.json for writing" << std::endl;
     }
 }
 
