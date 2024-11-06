@@ -804,31 +804,58 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
     return headers;
 }
 
+void print_expr_info(const std::string& context, const expr2tc& expr) {
+    std::cout << "\nDEBUG " << context << ":\n";
+    std::cout << "  - expr is_nil: " << is_nil_expr(expr) << "\n";
+    // std::cout << "  - type: " << expr->type->id << "\n";
+    if(is_pointer_type(expr->type)) {
+        const pointer_type2t& ptr = to_pointer_type(expr->type);
+        // std::cout << "  - points to type: " << ptr.subtype->id << "\n";
+    }
+    if(is_struct_type(expr->type)) {
+        const struct_type2t& s = to_struct_type(expr->type);
+        std::cout << "  - struct members: " << s.members.size() << "\n";
+        for(size_t i = 0; i < s.members.size(); i++) {
+            std::cout << "    - " << id2string(s.member_names[i]) << "\n";
+        }
+    }
+}
+
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
-    std::string result;
+    print_expr_info("get_struct_values input", expr);
     
+    std::string result;
     if(is_nil_expr(expr)) {
+        std::cout << "DEBUG: Expr is nil\n";
         return "NULL";
     }
 
-    // Get actual type and handle pointer dereferencing
     type2tc actual_type;
     expr2tc actual_expr = expr;
     
     if(is_pointer_type(expr->type)) {
+        std::cout << "DEBUG: Found pointer type\n";
         const pointer_type2t& ptr_type = to_pointer_type(expr->type);
         actual_type = ptr_type.subtype;
-        actual_expr = expr2tc(std::make_shared<dereference2t>(actual_type, expr));
+        try {
+            actual_expr = expr2tc(std::make_shared<dereference2t>(actual_type, expr));
+            std::cout << "DEBUG: Successfully dereferenced pointer\n";
+        } catch(const std::exception& e) {
+            std::cout << "DEBUG: Failed to dereference: " << e.what() << "\n";
+            return "<dereference-error>";
+        }
     } else {
         actual_type = expr->type;
     }
 
+    print_expr_info("after dereference", actual_expr);
+
     if(is_struct_type(actual_type)) {
+        std::cout << "DEBUG: Processing struct type\n";
         const struct_type2t& struct_type = to_struct_type(actual_type);
         result += "{";
         bool first = true;
 
-        // Iterate through all struct members
         for(size_t i = 0; i < struct_type.members.size(); i++) {
             if(!first) result += ", ";
             first = false;
@@ -836,16 +863,20 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
             const irep_idt& member_name = struct_type.member_names[i];
             const type2tc& member_type = struct_type.members[i];
             
+            std::cout << "DEBUG: Processing member " << id2string(member_name) << "\n";
+            
             result += id2string(member_name) + ": ";
             
             try {
-                // Create member expression using shared_ptr
                 expr2tc member_expr = expr2tc(std::make_shared<member2t>(
                     member_type,
                     actual_expr,
                     member_name));
+
+                print_expr_info("member " + id2string(member_name), member_expr);
                 
                 if(is_nil_expr(member_expr)) {
+                    std::cout << "DEBUG: Member expr is nil\n";
                     result += "NULL";
                     continue;
                 }
@@ -854,21 +885,30 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                     result += get_struct_values(ns, member_expr);
                 }
                 else if(is_array_type(member_type)) {
-                    result += "\"" + from_expr(ns, "", member_expr) + "\"";
+                    std::cout << "DEBUG: Array member\n";
+                    std::string array_val = from_expr(ns, "", member_expr);
+                    std::cout << "DEBUG: Array value: " << array_val << "\n";
+                    result += "\"" + array_val + "\"";
                 }
                 else {
                     if(is_constant_int2t(member_expr)) {
-                        result += integer2string(to_constant_int2t(member_expr).value);
+                        const constant_int2t& c = to_constant_int2t(member_expr);
+                        std::cout << "DEBUG: Int value: " << c.value << "\n";
+                        result += integer2string(c.value);
                     }
                     else if(is_constant_bool2t(member_expr)) {
-                        result += to_constant_bool2t(member_expr).value ? "true" : "false";
+                        const constant_bool2t& c = to_constant_bool2t(member_expr);
+                        result += c.value ? "true" : "false";
                     }
                     else {
-                        result += from_expr(ns, "", member_expr);
+                        std::string val = from_expr(ns, "", member_expr);
+                        std::cout << "DEBUG: Other value: " << val << "\n";
+                        result += val;
                     }
                 }
             }
-            catch(const std::runtime_error& e) {
+            catch(const std::exception& e) {
+                std::cout << "DEBUG: Member access error: " << e.what() << "\n";
                 result += "<error>";
                 continue;
             }
@@ -877,7 +917,9 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return result;
     }
     
-    return from_expr(ns, "", expr);
+    std::string final_val = from_expr(ns, "", expr);
+    std::cout << "DEBUG: Final non-struct value: " << final_val << "\n";
+    return final_val;
 }
 
 std::string get_assignment_message(const namespacet& ns, 
@@ -959,18 +1001,25 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
                     step_data["function"] = function;
                     step_data["step_number"] = step_count++;
 
-                    // Inside add_coverage_to_json where initial values are captured
+                    // Modified initial values capture in add_coverage_to_json
                     if(!initial_state_captured && step.is_assignment()) {
                         std::string var_name = from_expr(ns, "", step.lhs);
                         
                         if(processed_vars.find(var_name) == processed_vars.end()) {
                             processed_vars.insert(var_name);
                             
-                            // Handle based on type
+                            std::cout << "\nDEBUG Processing initial value for: " << var_name << "\n";
+                            print_expr_info("step.lhs", step.lhs);
+                            print_expr_info("step.value", step.value);
+                            
                             if(is_pointer_type(step.value->type) || is_struct_type(step.value->type)) {
-                                initial_values[var_name] = json::parse(get_struct_values(ns, step.value));
+                                std::string struct_val = get_struct_values(ns, step.value);
+                                std::cout << "DEBUG: Struct value result: " << struct_val << "\n";
+                                initial_values[var_name] = json::parse(struct_val);
                             } else {
-                                initial_values[var_name] = from_expr(ns, "", step.value);
+                                std::string val = from_expr(ns, "", step.value);
+                                std::cout << "DEBUG: Simple value result: " << val << "\n";
+                                initial_values[var_name] = val;
                             }
                         }
                     }
