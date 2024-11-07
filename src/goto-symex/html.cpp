@@ -1329,6 +1329,158 @@ void inspect_device_details(const expr2tc& expr, const namespacet& ns) {
     }
 }
 
+// Helper function to examine expr details
+void dump_expr_details(const expr2tc& expr, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    std::cout << indent << "Expression ID: " << get_expr_id(expr) << "\n";
+    std::cout << indent << "Value: " << from_expr(ns, "", expr) << "\n";
+    std::cout << indent << "Type ID: " << get_type_id(expr->type) << "\n";
+}
+
+// Helper to dump array data if possible
+void try_dump_array(const expr2tc& array_expr, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    if(is_array_type(array_expr->type)) {
+        const array_type2t& arr_type = to_array_type(array_expr->type);
+        std::cout << indent << "Array of type: " << get_type_id(arr_type.subtype) << "\n";
+        std::cout << indent << "Array value: " << from_expr(ns, "", array_expr) << "\n";
+    }
+}
+
+// Approach 1: Using type system directly
+void inspect_via_type_system(const expr2tc& expr, const namespacet& ns) {
+    std::cout << "\nAPPROACH 1 - Type System Inspection:\n";
+    
+    if(is_nil_expr(expr)) {
+        std::cout << "Nil expression\n";
+        return;
+    }
+
+    dump_expr_details(expr, ns);
+    
+    // Walk the type hierarchy
+    type2tc current_type = expr->type;
+    while(!is_nil_type(current_type)) {
+        std::cout << "Type level: " << get_type_id(current_type) << "\n";
+        
+        if(is_struct_type(current_type)) {
+            const struct_type2t& struct_type = to_struct_type(current_type);
+            std::cout << "Found struct with " << struct_type.members.size() << " members:\n";
+            for(size_t i = 0; i < struct_type.members.size(); i++) {
+                std::cout << "  Member " << i << ": " << id2string(struct_type.member_names[i]) << "\n";
+                std::cout << "  Type: " << get_type_id(struct_type.members[i]) << "\n";
+            }
+        }
+        else if(is_pointer_type(current_type)) {
+            const pointer_type2t& ptr_type = to_pointer_type(current_type);
+            std::cout << "Pointer to: " << get_type_id(ptr_type.subtype) << "\n";
+            current_type = ptr_type.subtype;
+            continue;
+        }
+        break;
+    }
+}
+
+// Approach 2: Using dereference and member access
+void inspect_via_deref(const expr2tc& expr, const namespacet& ns) {
+    std::cout << "\nAPPROACH 2 - Dereference Inspection:\n";
+    
+    if(is_pointer_type(expr->type)) {
+        try {
+            expr2tc deref = dereference2tc(expr->type, expr);
+            std::cout << "Dereferenced value type: " << get_type_id(deref->type) << "\n";
+            std::cout << "Dereferenced value: " << from_expr(ns, "", deref) << "\n";
+            
+            if(is_struct_type(deref->type)) {
+                const struct_type2t& struct_type = to_struct_type(deref->type);
+                std::cout << "Struct members:\n";
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    try {
+                        expr2tc member = member2tc(struct_type.members[i], deref, struct_type.member_names[i]);
+                        std::cout << "  " << id2string(struct_type.member_names[i]) 
+                                 << " = " << from_expr(ns, "", member) << "\n";
+                        
+                        // For array members
+                        if(is_array_type(struct_type.members[i])) {
+                            try_dump_array(member, ns, 2);
+                        }
+                    } catch(const std::exception& e) {
+                        std::cout << "  Failed to access member " 
+                                 << id2string(struct_type.member_names[i]) 
+                                 << ": " << e.what() << "\n";
+                    }
+                }
+            }
+        } catch(const std::exception& e) {
+            std::cout << "Dereference failed: " << e.what() << "\n";
+        }
+    }
+}
+
+// Approach 3: Using symbol resolution
+void inspect_via_symbol(const expr2tc& expr, const namespacet& ns) {
+    std::cout << "\nAPPROACH 3 - Symbol Resolution:\n";
+    
+    if(is_symbol2t(expr)) {
+        const symbol2t& sym = to_symbol2t(expr);
+        std::cout << "Symbol name: " << sym.thename << "\n";
+        dump_expr_details(expr, ns, 1);
+        
+        try {
+            // Try to get symbol info
+            const symbolt* symbol = ns.lookup(sym.thename);
+            if(symbol) {
+                std::cout << "Found symbol in namespace\n";
+                std::cout << "Symbol type: " << symbol->type.pretty() << "\n";
+                std::cout << "Is struct: " << (symbol->type.is_struct() ? "yes" : "no") << "\n";
+            }
+        } catch(const std::exception& e) {
+            std::cout << "Symbol lookup failed: " << e.what() << "\n";
+        }
+    }
+}
+
+// Approach 4: Raw struct memory examination
+void inspect_memory(const expr2tc& expr, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    std::cout << "\nAPPROACH 4 - Memory Examination:\n";
+    
+    const expr2t* raw_ptr = expr.get();
+    std::cout << indent << "Expression at: " << (void*)raw_ptr << "\n";
+    std::cout << indent << "Expression dump:\n";
+    __builtin_dump_struct(raw_ptr, printf);
+    
+    if(const type2t* type_ptr = expr->type.get()) {
+        std::cout << indent << "Type at: " << (void*)type_ptr << "\n";
+        std::cout << indent << "Type dump:\n";
+        __builtin_dump_struct(type_ptr, printf);
+        
+        if(is_pointer_type(expr->type)) {
+            try {
+                expr2tc deref = dereference2tc(expr->type, expr);
+                if(!is_nil_expr(deref)) {
+                    std::cout << indent << "Dereferenced content at: " 
+                             << (void*)deref.get() << "\n";
+                    std::cout << indent << "Dereferenced dump:\n";
+                    __builtin_dump_struct(deref.get(), printf);
+                }
+            } catch(...) {
+                std::cout << indent << "Failed to dereference\n";
+            }
+        }
+    }
+}
+
+// Main inspection function that tries all approaches
+void inspect_all_approaches(const expr2tc& expr, const namespacet& ns) {
+    std::cout << "\n=== Trying all inspection approaches ===\n";
+    
+    inspect_via_type_system(expr, ns);
+    inspect_via_deref(expr, ns);
+    inspect_via_symbol(expr, ns);
+    inspect_memory(expr, ns);
+}
+
 void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
     std::cout << "\nDEBUG Tracking device state:\n";
     
@@ -1338,21 +1490,21 @@ void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
             
         std::string lhs_str = from_expr(ns, "", step.lhs);
         if(lhs_str.find("device") == 0 || lhs_str.find(".device") != std::string::npos) {
-            std::cout << "\nDEVICE UPDATE at line " 
-                     << step.pc->location.get_line() << ":\n";
-                     
-            std::cout << "LHS:\n";
-            inspect_device_details(step.lhs, ns);
+            std::cout << "\n=== DEVICE UPDATE at line " 
+                     << step.pc->location.get_line() << " ===\n";
+            
+            std::cout << "LHS Expression: " << lhs_str << "\n";
+            inspect_all_approaches(step.lhs, ns);
             
             if(!is_nil_expr(step.value)) {
-                std::cout << "\nNew value:\n";
-                inspect_device_details(step.value, ns);
+                std::cout << "\nRHS Value:\n";
+                inspect_all_approaches(step.value, ns);
             }
             
             // Try to get full struct for member updates
             if(is_member2t(step.lhs)) {
                 std::cout << "\nParent struct:\n";
-                inspect_device_details(to_member2t(step.lhs).source_value, ns);
+                inspect_all_approaches(to_member2t(step.lhs).source_value, ns);
             }
         }
     }
