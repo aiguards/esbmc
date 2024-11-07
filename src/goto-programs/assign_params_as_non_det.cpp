@@ -3,10 +3,6 @@
 bool assign_params_as_non_det::runOnFunction(
   std::pair<const dstring, goto_functiont> &F)
 {
-  // check if it's a pointer
-  // if it's a pointer first create an obj
-  // create if-statment if (non_bool_dont_count) assign pointer = ref(obj) .property("do not count")
-
   if (context.find_symbol(F.first) == nullptr)
     return false; // Not exist
 
@@ -22,12 +18,6 @@ bool assign_params_as_non_det::runOnFunction(
   if (!F.second.body_available)
     return false; // Empty function
 
-  /*
-    Foreach parameter, create an assignment to nondet value and insert in the front
-    E.g. func(int x, bool y) {...}
-    =>
-    func(int x, bool y)  { x = nondet_int(); y = nondet_bool(); ...}
-  */
   goto_programt &goto_program = F.second.body;
   auto it = (goto_program).instructions.begin();
   locationt l = context.find_symbol(F.first)->location;
@@ -40,28 +30,63 @@ bool assign_params_as_non_det::runOnFunction(
       return false; // Not expected
     exprt lhs = symbol_expr(*context.find_symbol(_id));
 
-    // rhs
-    exprt rhs = exprt("sideeffect", lhs.type());
-    rhs.statement("nondet");
-    rhs.location() = l;
+    if (lhs.type().is_pointer())
+    {
+      // get subType()
+      typet subt = lhs.type().subtype();
+      
+      // create obj and move it to the symbol table
+      symbolt s;
+      s.name = "obj_" + id2string(_id);
+      s.type = subt;
+      s.location = l;
+      context.move(s);
+      
+      // do assignment
+      code_assignt assign(lhs, address_of_exprt(symbol_exprt(s.name, s.type)));
+      assign.location() = l;
+      
+      // create if statement
+      codet if_code("ifthenelse");
+      if_code.operands().resize(3);
+      if_code.op0() = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
+      if_code.op1() = assign;
+      // op2 remains empty for 'else'
+      
+      // move it to goto program
+      goto_programt tmp;
+      goto_programt::targett if_statement = tmp.add_instruction(GOTO);
+      if_statement->location = l;
+      if_statement->function = it->location.get_function();
+      migrate_expr(if_code, if_statement->code);
+      
+      // insert
+      goto_program.insert_swap(it++, *if_statement);
+      --it;
+    }
+    else
+    {
+      // rhs
+      exprt rhs = exprt("sideeffect", lhs.type());
+      rhs.statement("nondet");
+      rhs.location() = l;
 
-    // assignment
-    goto_programt tmp;
-    goto_programt::targett assignment = tmp.add_instruction(ASSIGN);
-    assignment->location = l;
-    assignment->function = it->location.get_function();
+      // assignment
+      goto_programt tmp;
+      goto_programt::targett assignment = tmp.add_instruction(ASSIGN);
+      assignment->location = l;
+      assignment->function = it->location.get_function();
 
-    code_assignt code_assign(lhs, rhs);
-    code_assign.location() = it->location;
-    migrate_expr(code_assign, assignment->code);
+      code_assignt code_assign(lhs, rhs);
+      code_assign.location() = it->location;
+      migrate_expr(code_assign, assignment->code);
 
-    // insert
-    goto_program.insert_swap(it++, *assignment);
-    --it;
+      // insert
+      goto_program.insert_swap(it++, *assignment);
+      --it;
+    }
   }
 
   goto_program.update();
   return true;
 }
-
-// End of file
