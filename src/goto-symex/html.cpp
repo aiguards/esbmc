@@ -1047,97 +1047,126 @@ std::string get_assignment_message(const namespacet& ns,
     return msg;
 }
 
+void dump_type_info(const type2tc& type, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    std::cout << indent << "Type ID: " << get_type_id(type) << "\n";
+    
+    if(is_struct_type(type)) {
+        const struct_type2t& struct_type = to_struct_type(type);
+        std::cout << indent << "Struct with " << struct_type.members.size() << " members:\n";
+        for(size_t i = 0; i < struct_type.members.size(); i++) {
+            std::cout << indent << "  Member " << i << ": " << id2string(struct_type.member_names[i]) << "\n";
+            dump_type_info(struct_type.members[i], ns, depth + 1);
+        }
+    }
+    else if(is_pointer_type(type)) {
+        const pointer_type2t& ptr_type = to_pointer_type(type);
+        std::cout << indent << "Pointer to:\n";
+        dump_type_info(ptr_type.subtype, ns, depth + 1);
+    }
+    else if(is_array_type(type)) {
+        const array_type2t& arr_type = to_array_type(type);
+        std::cout << indent << "Array of:\n";
+        dump_type_info(arr_type.subtype, ns, depth + 1);
+    }
+}
+
+void dump_value(const expr2tc& expr, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    if(is_nil_expr(expr)) {
+        std::cout << indent << "<nil>\n";
+        return;
+    }
+
+    // Dump the raw expression structure
+    auto print_fn = [&indent](const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        std::cout << indent << "Raw dump: ";
+        vprintf(fmt, args);
+        va_end(args);
+    };
+    
+    const expr2t* expr_ptr = expr.get();
+    if(expr_ptr) {
+        __builtin_dump_struct(expr_ptr, print_fn);
+    }
+
+    // Try to get actual value based on type
+    if(is_constant_int2t(expr)) {
+        const constant_int2t& num = to_constant_int2t(expr);
+        std::cout << indent << "Value: " << num.value << "\n";
+    }
+    else if(is_constant_string2t(expr)) {
+        const constant_string2t& str = to_constant_string2t(expr);
+        std::cout << indent << "Value: \"" << str.value << "\"\n";
+    }
+    else if(is_symbol2t(expr)) {
+        const symbol2t& sym = to_symbol2t(expr);
+        std::cout << indent << "Symbol: " << sym.thename << "\n";
+        dump_type_info(sym.type, ns, depth + 1);
+    }
+}
+
 void inspect_steps(const goto_tracet &trace, const namespacet &ns) {
     std::cout << "\nDEBUG Step inspection:\n";
     
     for(const auto &step : trace.steps) {
-        if(step.is_assignment()) {
-            std::cout << "\nDEBUG Assignment step:\n";
+        if(step.is_assignment() && !is_nil_expr(step.lhs)) {
+            std::cout << "\nDEBUG Assignment at " << step.pc->location << ":\n";
             
-            // Look at the LHS expression
-            if(!is_nil_expr(step.lhs)) {
-                std::cout << "LHS details:\n";
-                if(is_symbol2t(step.lhs)) {
-                    const symbol2t &sym = to_symbol2t(step.lhs);
-                    std::cout << "  Symbol name: " << sym.thename << "\n";
-                    std::cout << "  Raw symbol value: " << from_expr(ns, "", step.lhs) << "\n";
+            // LHS analysis
+            std::cout << "Left-hand side:\n";
+            dump_value(step.lhs, ns, 1);
+            
+            // If it's a struct access or pointer dereference, try to get more info
+            if(is_symbol2t(step.lhs)) {
+                const symbol2t& sym = to_symbol2t(step.lhs);
+                if(is_pointer_type(sym.type)) {
+                    std::cout << "  Pointer details:\n";
+                    const pointer_type2t& ptr = to_pointer_type(sym.type);
                     
-                    // Detailed type inspection
-                    std::cout << "  Type details:\n";
-                    if(is_pointer_type(sym.type)) {
-                        const pointer_type2t &ptr_type = to_pointer_type(sym.type);
-                        std::cout << "    - Is pointer type\n";
-                        std::cout << "    - Subtype ID: " << get_type_id(ptr_type.subtype) << "\n";
-                        
-                        // Try to get more subtype info
-                        if(is_symbol_type(ptr_type.subtype)) {
-                            std::cout << "    - Symbol type details:\n";
-                            const symbol_type2t &sym_type = to_symbol_type(ptr_type.subtype);
-                            std::cout << "      Symbol: " << sym_type.symbol_name << "\n";
-                        }
-                        
-                        // Dump the type structure
-                        auto print_fn = [](const char* fmt, ...) {
-                            va_list args;
-                            va_start(args, fmt);
-                            std::cout << "    DEBUG type dump: ";
-                            vprintf(fmt, args);
-                            va_end(args);
-                        };
-                        
-                        std::cout << "    Raw type dump:\n";
-                        __builtin_dump_struct(&ptr_type, print_fn);
-                        
-                        // Try to dump what it points to
-                        if(!is_nil_expr(step.value)) {
-                            std::cout << "    Points to dump:\n"; 
-                            const expr2t* value_ptr = step.value.get();
-                            if(value_ptr) {
-                                __builtin_dump_struct(value_ptr, print_fn);
-                            }
-                        }
-                    }
-                    
-                    // Raw expr dump
-                    std::cout << "  Raw expr dump:\n";
-                    auto expr_print = [](const char* fmt, ...) {
-                        va_list args;
-                        va_start(args, fmt);
-                        std::cout << "    DEBUG expr dump: ";
-                        vprintf(fmt, args);
-                        va_end(args);
-                    };
-                    const expr2t* expr_ptr = step.lhs.get();
-                    if(expr_ptr) {
-                        __builtin_dump_struct(expr_ptr, expr_print);
+                    // Try to dereference and get struct info
+                    try {
+                        expr2tc deref = dereference2tc(ptr.subtype, step.lhs);
+                        std::cout << "  Dereferenced value:\n";
+                        dump_value(deref, ns, 2);
+                    } catch(const std::exception& e) {
+                        std::cout << "  Cannot dereference: " << e.what() << "\n";
                     }
                 }
             }
             
-            // Look at the raw values
+            // RHS/Value analysis
             if(!is_nil_expr(step.value)) {
-                std::cout << "Value details:\n";
-                std::cout << "  Raw value: " << from_expr(ns, "", step.value) << "\n";
+                std::cout << "Right-hand side:\n";
+                dump_value(step.value, ns, 1);
                 
-                // Try to dump the value structure
-                auto val_print = [](const char* fmt, ...) {
-                    va_list args;
-                    va_start(args, fmt);
-                    std::cout << "  DEBUG value dump: ";
-                    vprintf(fmt, args);
-                    va_end(args);
-                };
-                
-                const expr2t* value_ptr = step.value.get();
-                if(value_ptr) {
-                    __builtin_dump_struct(value_ptr, val_print);
+                // Try to get detailed value info
+                if(is_struct_type(step.value->type)) {
+                    std::cout << "  Struct value details:\n";
+                    const struct_type2t& struct_type = to_struct_type(step.value->type);
+                    for(size_t i = 0; i < struct_type.members.size(); i++) {
+                        try {
+                            expr2tc member = member2tc(
+                                struct_type.members[i],
+                                step.value,
+                                struct_type.member_names[i]);
+                                
+                            std::cout << "    " << id2string(struct_type.member_names[i]) << ":\n";
+                            dump_value(member, ns, 3);
+                        } catch(const std::exception& e) {
+                            std::cout << "    Cannot access member " 
+                                     << id2string(struct_type.member_names[i])
+                                     << ": " << e.what() << "\n";
+                        }
+                    }
                 }
             }
-
-            std::cout << "Location: " << step.pc->location << "\n\n";
         }
     }
 }
+
 
 void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
     std::cout << "\nDEBUG Tracking variable states:\n";
