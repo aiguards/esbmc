@@ -842,7 +842,7 @@ std::string get_type_name(const type2tc& type) {
 }
 
 std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
-    if(depth > 20) { // Prevent extremely deep recursion
+    if(depth > 20) { 
         return "<max-depth-reached>";
     }
 
@@ -854,64 +854,64 @@ std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr,
     // Get the actual pointer value/address
     std::string addr_str = from_expr(ns, "", expr);
     
-    // If it's a pointer dereference
-    if(is_dereference2t(expr)) {
-        const dereference2t& deref = to_dereference2t(expr);
-        
-        // Check if we've seen this address before
-        if(seen_addresses.find(addr_str) != seen_addresses.end()) {
-            return fmt::format("<circular-ref:{}>", addr_str);
-        }
-        seen_addresses.insert(addr_str);
-        
-        try {
-            // Get pointed-to value
-            return fmt::format("*({}) -> {}", 
-                addr_str,
-                get_struct_values(ns, deref.value, seen_addresses, depth + 1));
-        } catch(const std::runtime_error&) {
-            return fmt::format("<invalid-deref:{}>", addr_str);
-        }
-    }
+    std::cout << "DEBUG: Examining pointer with address: " << addr_str << std::endl;
     
-    // If it's an address-of operation
-    if(is_address_of2t(expr)) {
-        const address_of2t& addr = to_address_of2t(expr);
+    try {
+        // If this is a pointer to a struct, try to dereference it
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
         
+        std::cout << "DEBUG: Pointer points to type: " << get_type_name(ptr_type.subtype) << std::endl;
+        
+        // Check for circular references
         if(seen_addresses.find(addr_str) != seen_addresses.end()) {
             return fmt::format("<circular-ref:{}>", addr_str);
         }
         seen_addresses.insert(addr_str);
-        
-        try {
-            return fmt::format("&({}) -> {}", 
-                addr_str,
-                get_struct_values(ns, addr.ptr_obj, seen_addresses, depth + 1));
-        } catch(const std::runtime_error&) {
-            return fmt::format("<invalid-addr:{}>", addr_str);
-        }
-    }
 
-    // Handle pointer to array
-    if(is_pointer_type(expr->type)) {
-        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-        if(is_array_type(ptr_type.subtype)) {
+        // Try to dereference the pointer to get the actual structure
+        if(is_struct_type(ptr_type.subtype)) {
+            try {
+                // Create dereference expression
+                expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
+                std::cout << "DEBUG: Successfully dereferenced struct pointer" << std::endl;
+                
+                // Recursively process the dereferenced struct
+                return fmt::format("*({})->{}", 
+                    addr_str,
+                    get_struct_values(ns, deref_expr, seen_addresses, depth + 1));
+            }
+            catch(const std::runtime_error& e) {
+                std::cout << "DEBUG: Failed to dereference struct pointer: " << e.what() << std::endl;
+                return fmt::format("<invalid-struct-ptr:{}>", addr_str);
+            }
+        }
+        // Handle array pointers
+        else if(is_array_type(ptr_type.subtype)) {
             try {
                 expr2tc deref = dereference2tc(ptr_type.subtype, expr);
                 return get_array_values(ns, deref, seen_addresses, depth);
-            } catch(const std::runtime_error&) {
+            }
+            catch(const std::runtime_error& e) {
+                std::cout << "DEBUG: Failed to dereference array pointer: " << e.what() << std::endl;
                 return fmt::format("<invalid-array-ptr:{}>", addr_str);
             }
         }
+        // Handle primitive type pointers
+        else {
+            try {
+                expr2tc deref = dereference2tc(ptr_type.subtype, expr);
+                std::string value = from_expr(ns, "", deref);
+                return fmt::format("*({}) -> {}", addr_str, value);
+            }
+            catch(const std::runtime_error& e) {
+                std::cout << "DEBUG: Failed to dereference primitive pointer: " << e.what() << std::endl;
+                return fmt::format("<ptr:{}>", addr_str);
+            }
+        }
     }
-
-    // For other pointer types, try to get the value
-    try {
-        return fmt::format("ptr({}) -> {}", 
-            addr_str,
-            from_expr(ns, "", expr));
-    } catch(const std::runtime_error&) {
-        return fmt::format("<ptr:{}>", addr_str);
+    catch(const std::runtime_error& e) {
+        std::cout << "DEBUG: Error processing pointer: " << e.what() << std::endl;
+        return fmt::format("<error-ptr:{}>", addr_str);
     }
 }
 
@@ -981,12 +981,12 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
     if(depth > 20) return "<max-depth-reached>";
     
     if(is_nil_expr(expr)) {
-        std::cout << "DEBUG: Encountered nil expression" << std::endl;
+        std::cout << "DEBUG: Encountered nil expression in struct processing" << std::endl;
         return "NULL";
     }
     
     try {
-        std::cout << "DEBUG: Processing expression of type: " << get_type_name(expr->type) << std::endl;
+        std::cout << "DEBUG: Processing struct expression of type: " << get_type_name(expr->type) << std::endl;
 
         // Handle different types
         if(is_struct_type(expr->type)) {
@@ -1009,8 +1009,6 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
                 std::cout << "DEBUG: Processing member: " << id2string(component_name) 
                          << " of type: " << get_type_name(member_type) << std::endl;
                 
-                result += fmt::format("{}: ", id2string(component_name));
-                
                 try {
                     expr2tc member_expr = member2tc(
                         member_type,
@@ -1018,42 +1016,25 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
                         struct_type.member_names[i]
                     );
                     
-                    std::string member_value;
+                    result += fmt::format("{}: ", id2string(component_name));
+                    
                     if(is_pointer_type(member_type)) {
-                        member_value = get_pointer_target_values(ns, member_expr, seen_addresses, depth + 1);
+                        result += get_pointer_target_values(ns, member_expr, seen_addresses, depth + 1);
                     }
                     else if(is_array_type(member_type)) {
-                        member_value = get_array_values(ns, member_expr, seen_addresses, depth + 1);
+                        result += get_array_values(ns, member_expr, seen_addresses, depth + 1);
                     }
                     else if(is_struct_type(member_type)) {
-                        member_value = get_struct_values(ns, member_expr, seen_addresses, depth + 1);
-                    }
-                    else if(is_union_type(member_type)) {
-                        const union_type2t& union_type = to_union_type(member_type);
-                        member_value = "union{";
-                        for(size_t j = 0; j < union_type.members.size(); j++) {
-                            if(j > 0) member_value += " | ";
-                            member_value += fmt::format("{}: {}", 
-                                id2string(union_type.member_names[j]),
-                                get_type_name(union_type.members[j]));
-                        }
-                        member_value += "}";
-                    }
-                    else if(is_code_type(member_type)) {
-                        member_value = "<function>";
-                    }
-                    else if(is_bool_type(member_type)) {
-                        member_value = from_expr(ns, "", member_expr) == "1" ? "true" : "false";
+                        result += get_struct_values(ns, member_expr, seen_addresses, depth + 1);
                     }
                     else {
-                        member_value = from_expr(ns, "", member_expr);
+                        result += from_expr(ns, "", member_expr);
                     }
                     
-                    std::cout << "DEBUG: Member value: " << member_value << std::endl;
-                    result += member_value;
+                    std::cout << "DEBUG: Successfully processed member" << std::endl;
                 }
                 catch(const std::runtime_error& e) {
-                    std::cout << "DEBUG: Error processing member: " << e.what() << std::endl;
+                    std::cout << "DEBUG: Error processing struct member: " << e.what() << std::endl;
                     result += "<error>";
                 }
             }
@@ -1061,27 +1042,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
             return result;
         }
         else if(is_pointer_type(expr->type)) {
-            std::string pointer_value = get_pointer_target_values(ns, expr, seen_addresses, depth);
-            std::cout << "DEBUG: Pointer value: " << pointer_value << std::endl;
-            return pointer_value;
-        }
-        else if(is_array_type(expr->type)) {
-            std::string array_value = get_array_values(ns, expr, seen_addresses, depth);
-            std::cout << "DEBUG: Array value: " << array_value << std::endl;
-            return array_value;
-        }
-        else if(is_union_type(expr->type)) {
-            const union_type2t& union_type = to_union_type(expr->type);
-            std::string result = "union{";
-            std::cout << "DEBUG: Processing union with " << union_type.members.size() << " members" << std::endl;
-            for(size_t i = 0; i < union_type.members.size(); i++) {
-                if(i > 0) result += " | ";
-                result += fmt::format("{}: {}", 
-                    id2string(union_type.member_names[i]),
-                    get_type_name(union_type.members[i]));
-            }
-            result += "}";
-            return result;
+            return get_pointer_target_values(ns, expr, seen_addresses, depth);
         }
         else {
             std::string value = from_expr(ns, "", expr);
@@ -1090,7 +1051,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
         }
     }
     catch(const std::runtime_error& e) {
-        std::cout << "DEBUG: Error in get_struct_values: " << e.what() << std::endl;
+        std::cout << "DEBUG: Error in struct processing: " << e.what() << std::endl;
         return fmt::format("<error:{}>", e.what());
     }
 }
