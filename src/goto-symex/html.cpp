@@ -823,13 +823,11 @@ void print_expr_info(const std::string& context, const expr2tc& expr) {
 
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
     std::cout << "\nDEBUG Detailed type analysis ---------------\n";
-    print_expr_info("Initial expr", expr);
-
+    
     if(is_nil_expr(expr)) {
         return "null";
     }
 
-    // For pointer types, try to dump struct info
     if(is_pointer_type(expr->type)) {
         std::cout << "DEBUG: Pointer analysis:\n";
         std::string raw_val = from_expr(ns, "", expr);
@@ -844,41 +842,30 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                 va_end(args);
             };
 
-            // First dump the expr2t structure
-            std::cout << "DEBUG: Dumping expr2t structure:\n";
-            const expr2t* expr_ptr = expr.get();
-            if(expr_ptr) {
-                __builtin_dump_struct(expr_ptr, print_fn);
+            const pointer_type2t &ptr_type = to_pointer_type(expr->type);
+            std::cout << "DEBUG: Pointer type details:\n";
+            
+            if(is_struct_type(ptr_type.subtype)) {
+                const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
+                std::cout << "DEBUG: Struct has " << struct_type.members.size() << " members\n";
                 
-                // Print type information
-                std::cout << "DEBUG: Expression type info:\n";
-                std::cout << "Expr ID: " << get_expr_id(expr) << "\n";
-                std::cout << "Type ID: " << get_type_id(expr->type) << "\n";
-                
-                // Get pointer type info
-                const pointer_type2t &ptr_type = to_pointer_type(expr->type);
-                std::cout << "DEBUG: Pointed-to type info:\n";
-                std::cout << "Subtype ID: " << get_type_id(ptr_type.subtype) << "\n";
-                
-                // If it's a struct type, get more details
-                if(is_struct_type(ptr_type.subtype)) {
-                    const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
-                    std::cout << "DEBUG: Found struct type with " << struct_type.members.size() << " members\n";
-                    for(size_t i = 0; i < struct_type.members.size(); ++i) {
-                        std::cout << "Member " << i << " type: " << get_type_id(struct_type.members[i]) << "\n";
-                        std::cout << "Member " << i << " name: " << struct_type.member_names[i] << "\n";
-                    }
-                }
-                
-                // Try to access the actual value
-                if(is_symbol2t(expr)) {
-                    std::cout << "DEBUG: Symbol name: " << to_symbol2t(expr).get_symbol_name() << "\n";
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    std::cout << "Member " << i << ":\n";
+                    std::cout << "  Name: " << struct_type.member_names[i] << "\n";
+                    std::cout << "  Type ID: " << get_type_id(struct_type.members[i]) << "\n";
                 }
             }
+            
+            const expr2t* expr_ptr = expr.get();
+            if(expr_ptr) {
+                std::cout << "DEBUG: About to dump expr at " << expr_ptr << "\n";
+                __builtin_dump_struct(expr_ptr, print_fn);
+            }
+
         } catch(const std::exception& e) {
-            std::cout << "DEBUG: Exception during struct analysis: " << e.what() << "\n";
+            std::cout << "DEBUG: Exception: " << e.what() << "\n";
         } catch(...) {
-            std::cout << "DEBUG: Unknown exception during struct analysis\n";
+            std::cout << "DEBUG: Unknown exception\n";
         }
         
         if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
@@ -890,7 +877,6 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "\"" + raw_val + "\"";
     }
     
-    // For basic types (non-pointers)
     try {
         std::string val = from_expr(ns, "", expr);
         if(val.empty()) {
