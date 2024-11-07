@@ -835,86 +835,101 @@ void dump_type_details(const type2tc& type, int depth = 0) {
 void print_expr_info(const std::string& context, const expr2tc& expr, const namespacet& ns) {
     std::cout << "\nDEBUG " << context << ":\n";
     
-    // Skip if nil
     if(is_nil_expr(expr)) {
         std::cout << "  <nil>\n";
         return;
     }
 
-    // Get basic type info
+    // Basic type info with more detailed structure
     std::cout << "  Type: ";
     dump_type_details(expr->type);
     std::cout << "\n";
     
-    // Get value based on type
+    // Show expression ID and raw pointer value
+    std::cout << "  Expression ID: " << get_expr_id(expr) << "\n";
+    std::cout << "  Raw pointer: " << expr.get() << "\n";
+    
+    // Value with more context
     std::cout << "  Value: ";
     if(is_constant_int2t(expr)) {
-        std::cout << to_constant_int2t(expr).value;
+        const constant_int2t& int_val = to_constant_int2t(expr);
+        std::cout << int_val.value << " (constant int)";
     }
     else if(is_constant_string2t(expr)) {
-        std::cout << "\"" << to_constant_string2t(expr).value << "\"";
+        std::cout << "\"" << to_constant_string2t(expr).value << "\" (constant string)";
     }
     else if(is_symbol2t(expr)) {
         const symbol2t& sym = to_symbol2t(expr);
         std::cout << sym.thename;
         
-        // For pointers to structs, try to show the fields
         if(is_pointer_type(sym.type)) {
             const pointer_type2t& ptr = to_pointer_type(sym.type);
             if(is_struct_type(ptr.subtype)) {
                 const struct_type2t& s = to_struct_type(ptr.subtype);
-                std::cout << " (Points to struct with fields:";
+                std::cout << "\n  Struct pointer details:";
+                std::cout << "\n    Number of fields: " << s.members.size();
                 for(size_t i = 0; i < s.members.size(); i++) {
-                    std::cout << "\n    " << id2string(s.member_names[i]) << ": ";
+                    std::cout << "\n    Field " << i << ":";
+                    std::cout << "\n      Name: " << id2string(s.member_names[i]);
+                    std::cout << "\n      Type: ";
                     dump_type_details(s.members[i]);
                 }
-                std::cout << "\n  )";
             }
         }
     }
     else {
-        std::cout << from_expr(ns, "", expr);
+        std::string val = from_expr(ns, "", expr);
+        std::cout << val << " (expr value)";
     }
     std::cout << "\n";
 
-    // For assignments, try to show what values are being set
-    if(expr->expr_id == expr2t::expr_ids::constant_array_id) {
-        std::cout << "  Array contents:\n";
-        const constant_array2t& arr = to_constant_array2t(expr);
-        
-        // Just dump the whole array object to see its structure
-        auto print_fn = [](const char* fmt, ...) {
-            va_list args;
-            va_start(args, fmt);
-            std::cout << "DEBUG array dump: ";
-            vprintf(fmt, args);
-            va_end(args);
-        };
-        
-        std::cout << "DEBUG: About to dump array at " << &arr << "\n";
-        __builtin_dump_struct(&arr, print_fn);
-    }
-
-    // For struct assignments or dereferences, try to show field values
+    // Enhanced struct/pointer information
     if(is_pointer_type(expr->type)) {
         try {
             expr2tc deref = dereference2tc(expr->type, expr);
-            if(!is_nil_expr(deref) && is_struct_type(deref->type)) {
-                const struct_type2t& s = to_struct_type(deref->type);
-                std::cout << "  Dereferenced fields:\n";
-                for(size_t i = 0; i < s.members.size(); i++) {
-                    expr2tc field = member2tc(s.members[i], deref, s.member_names[i]);
-                    std::cout << "    " << id2string(s.member_names[i]) << " = ";
-                    if(!is_nil_expr(field)) {
-                        std::cout << from_expr(ns, "", field);
-                    } else {
-                        std::cout << "<nil>";
+            if(!is_nil_expr(deref)) {
+                std::cout << "  Dereferenced value details:\n";
+                std::cout << "    Type: ";
+                dump_type_details(deref->type);
+                std::cout << "\n";
+                
+                if(is_struct_type(deref->type)) {
+                    const struct_type2t& s = to_struct_type(deref->type);
+                    std::cout << "    Struct fields:\n";
+                    for(size_t i = 0; i < s.members.size(); i++) {
+                        std::cout << "      " << id2string(s.member_names[i]) << ":\n";
+                        std::cout << "        Type: ";
+                        dump_type_details(s.members[i]);
+                        std::cout << "\n";
+                        
+                        expr2tc field = member2tc(s.members[i], deref, s.member_names[i]);
+                        std::cout << "        Value: ";
+                        if(!is_nil_expr(field)) {
+                            std::cout << from_expr(ns, "", field);
+                        } else {
+                            std::cout << "<nil>";
+                        }
+                        std::cout << "\n";
                     }
-                    std::cout << "\n";
                 }
             }
-        } catch(...) {}
+        } catch(const std::exception& e) {
+            std::cout << "  Failed to dereference: " << e.what() << "\n";
+        } catch(...) {
+            std::cout << "  Failed to dereference (unknown error)\n";
+        }
     }
+
+    // Dump raw structure for debugging
+    std::cout << "  Raw structure dump:\n";
+    auto print_fn = [](const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        std::cout << "    ";
+        vprintf(fmt, args);
+        va_end(args);
+    };
+    __builtin_dump_struct(expr.get(), print_fn);
 }
 
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr, int depth = 0) {
