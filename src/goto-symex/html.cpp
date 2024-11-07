@@ -1244,6 +1244,83 @@ void dump_struct_contents(const expr2tc& expr, const namespacet& ns, int depth =
     }
 }
 
+void print_struct_member_values(const expr2tc& expr, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    
+    if(is_nil_expr(expr)) {
+        std::cout << indent << "<nil struct>\n";
+        return;
+    }
+
+    std::cout << indent << "Analyzing struct at " << expr.get() << ":\n";
+
+    // First get the base type
+    if(!is_struct_type(expr->type)) {
+        if(is_pointer_type(expr->type)) {
+            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+            if(is_struct_type(ptr_type.subtype)) {
+                // Try to dereference
+                try {
+                    expr2tc deref = dereference2tc(ptr_type.subtype, expr);
+                    std::cout << indent << "Dereferenced pointer to struct:\n";
+                    print_struct_member_values(deref, ns, depth + 1);
+                    return;
+                } catch(const std::exception& e) {
+                    std::cout << indent << "Failed to dereference: " << e.what() << "\n";
+                }
+            }
+        }
+        std::cout << indent << "Not a struct type: " << get_type_id(expr->type) << "\n";
+        return;
+    }
+
+    const struct_type2t& struct_type = to_struct_type(expr->type);
+    
+    // Print member names and types first
+    std::cout << indent << "Struct has " << struct_type.members.size() << " members:\n";
+    
+    for(size_t i = 0; i < struct_type.members.size(); i++) {
+        const irep_idt& member_name = struct_type.member_names[i];
+        const type2tc& member_type = struct_type.members[i];
+        
+        std::cout << indent << "Member " << i << ": " << id2string(member_name) << "\n";
+        std::cout << indent << "  Type: " << get_type_id(member_type) << "\n";
+        
+        try {
+            // Create member expression
+            expr2tc member_expr = member2tc(member_type, expr, member_name);
+            
+            std::cout << indent << "  Raw member expr: " << from_expr(ns, "", member_expr) << "\n";
+            
+            if(is_pointer_type(member_type)) {
+                std::cout << indent << "  Pointer member, trying to dereference:\n";
+                try {
+                    expr2tc deref = dereference2tc(to_pointer_type(member_type).subtype, member_expr); 
+                    print_struct_member_values(deref, ns, depth + 2);
+                } catch(const std::exception& e) {
+                    std::cout << indent << "  Failed to dereference: " << e.what() << "\n";
+                }
+            }
+            else if(is_struct_type(member_type)) {
+                std::cout << indent << "  Nested struct:\n";
+                print_struct_member_values(member_expr, ns, depth + 2);
+            }
+            else {
+                // Try to get value directly
+                std::cout << indent << "  Value: ";
+                if(is_constant_expr(member_expr)) {
+                    std::cout << from_expr(ns, "", member_expr) << "\n";
+                } else {
+                    std::cout << "<non-constant>\n";
+                    dump_expr_recursive(member_expr, depth + 2);
+                }
+            }
+        } catch(const std::exception& e) {
+            std::cout << indent << "  Error accessing member: " << e.what() << "\n";
+        }
+    }
+}
+
 void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
     std::cout << "\nDEBUG Tracking variable states:\n";
     
@@ -1251,34 +1328,30 @@ void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
         if(!step.is_assignment())
             continue;
             
-        std::cout << "\nDEBUG Assignment step:\n";
-        std::string lhs_str = from_expr(ns, "", step.lhs);
-        std::cout << "LHS: " << lhs_str << "\n";
+        std::cout << "\nDEBUG Assignment step at line " 
+                  << step.pc->location.get_line() << ":\n";
         
-        // Deep inspection of LHS
-        std::cout << "LHS detailed struct inspection:\n";
-        dump_struct_contents(step.lhs, ns);
+        // Analyze LHS
+        std::cout << "Left-hand side detailed inspection:\n";
+        std::cout << "Expression: " << from_expr(ns, "", step.lhs) << "\n";
+        print_struct_member_values(step.lhs, ns);
         
-        // Deep inspection of RHS/value if it exists
+        // Analyze RHS
         if(!is_nil_expr(step.value)) {
-            std::cout << "\nRHS detailed struct inspection:\n";
-            dump_struct_contents(step.value, ns);
+            std::cout << "\nRight-hand side detailed inspection:\n";
+            std::cout << "Expression: " << from_expr(ns, "", step.value) << "\n";
+            print_struct_member_values(step.value, ns);
         }
 
-        // Special handling for device struct updates
-        if(lhs_str.find("device.") != std::string::npos) {
-            std::cout << "\nDEVICE FIELD UPDATE DETECTED:\n";
-            std::cout << "Field: " << lhs_str.substr(lhs_str.find("device.") + 7) << "\n";
-            
-            // Try to get the parent device struct
-            try {
-                if(is_member2t(step.lhs)) {
-                    const member2t& member = to_member2t(step.lhs);
-                    std::cout << "Full device state inspection:\n";
-                    dump_struct_contents(member.source_value, ns);
-                }
-            } catch(const std::exception& e) {
-                std::cout << "Error inspecting device struct: " << e.what() << "\n";
+        // Special treatment for device struct
+        std::string lhs_str = from_expr(ns, "", step.lhs);
+        if(lhs_str.find("device") != std::string::npos) {
+            std::cout << "\nDEVICE STRUCT UPDATE DETECTED:\n";
+            if(is_member2t(step.lhs)) {
+                const member2t& member = to_member2t(step.lhs);
+                std::cout << "Device struct field " << member.member << " updated\n";
+                std::cout << "Full device state after update:\n";
+                print_struct_member_values(member.source_value, ns);
             }
         }
     }
