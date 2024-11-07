@@ -842,76 +842,54 @@ std::string get_type_name(const type2tc& type) {
 }
 
 std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
-    if(depth > 20) { 
-        return "<max-depth-reached>";
-    }
+    if(depth > 20) return "<max-depth-reached>";
 
-    // Handle null/invalid pointers
     if(is_nil_expr(expr)) {
+        std::cout << "DEBUG: Nil pointer expression" << std::endl;
         return "NULL";
     }
 
-    // Get the actual pointer value/address
-    std::string addr_str = from_expr(ns, "", expr);
-    
-    std::cout << "DEBUG: Examining pointer with address: " << addr_str << std::endl;
-    
-    try {
-        // If this is a pointer to a struct, try to dereference it
-        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-        
-        std::cout << "DEBUG: Pointer points to type: " << get_type_name(ptr_type.subtype) << std::endl;
-        
-        // Check for circular references
-        if(seen_addresses.find(addr_str) != seen_addresses.end()) {
-            return fmt::format("<circular-ref:{}>", addr_str);
-        }
-        seen_addresses.insert(addr_str);
+    std::cout << "DEBUG: Initial pointer analysis..." << std::endl;
+    std::cout << "DEBUG: Expression type ID: " << expr->type->type_id << std::endl;
 
-        // Try to dereference the pointer to get the actual structure
-        if(is_struct_type(ptr_type.subtype)) {
+    try {
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+        std::cout << "DEBUG: Pointer subtype ID: " << ptr_type.subtype->type_id << std::endl;
+        
+        // Get raw type information
+        std::cout << "DEBUG: Raw pointer type: " << from_type(ns, "", expr->type) << std::endl;
+        std::cout << "DEBUG: Raw subtype: " << from_type(ns, "", ptr_type.subtype) << std::endl;
+
+        // Try to get pointed-to value
+        std::string addr_str = from_expr(ns, "", expr);
+        std::cout << "DEBUG: Pointer address string: " << addr_str << std::endl;
+
+        // Try to create dereference expression
+        try {
+            expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
+            std::cout << "DEBUG: Successfully created dereference expression" << std::endl;
+            std::cout << "DEBUG: Dereferenced type ID: " << deref_expr->type->type_id << std::endl;
+            
+            // Try to get dereferenced value
             try {
-                // Create dereference expression
-                expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
-                std::cout << "DEBUG: Successfully dereferenced struct pointer" << std::endl;
-                
-                // Recursively process the dereferenced struct
-                return fmt::format("*({})->{}", 
-                    addr_str,
-                    get_struct_values(ns, deref_expr, seen_addresses, depth + 1));
-            }
-            catch(const std::runtime_error& e) {
-                std::cout << "DEBUG: Failed to dereference struct pointer: " << e.what() << std::endl;
-                return fmt::format("<invalid-struct-ptr:{}>", addr_str);
-            }
-        }
-        // Handle array pointers
-        else if(is_array_type(ptr_type.subtype)) {
-            try {
-                expr2tc deref = dereference2tc(ptr_type.subtype, expr);
-                return get_array_values(ns, deref, seen_addresses, depth);
-            }
-            catch(const std::runtime_error& e) {
-                std::cout << "DEBUG: Failed to dereference array pointer: " << e.what() << std::endl;
-                return fmt::format("<invalid-array-ptr:{}>", addr_str);
-            }
-        }
-        // Handle primitive type pointers
-        else {
-            try {
-                expr2tc deref = dereference2tc(ptr_type.subtype, expr);
-                std::string value = from_expr(ns, "", deref);
+                std::string value = from_expr(ns, "", deref_expr);
+                std::cout << "DEBUG: Dereferenced value: " << value << std::endl;
                 return fmt::format("*({}) -> {}", addr_str, value);
             }
             catch(const std::runtime_error& e) {
-                std::cout << "DEBUG: Failed to dereference primitive pointer: " << e.what() << std::endl;
-                return fmt::format("<ptr:{}>", addr_str);
+                std::cout << "DEBUG: Failed to get dereferenced value: " << e.what() << std::endl;
             }
         }
+        catch(const std::runtime_error& e) {
+            std::cout << "DEBUG: Failed to create dereference expression: " << e.what() << std::endl;
+        }
+
+        // If we can't dereference, at least show the pointer value
+        return fmt::format("<ptr:{}>", addr_str);
     }
     catch(const std::runtime_error& e) {
-        std::cout << "DEBUG: Error processing pointer: " << e.what() << std::endl;
-        return fmt::format("<error-ptr:{}>", addr_str);
+        std::cout << "DEBUG: Error in pointer analysis: " << e.what() << std::endl;
+        return "<error>";
     }
 }
 
