@@ -835,11 +835,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        // Always try to dump the struct
         try {
-            const expr2t* raw_ptr = expr.get();
-            std::cout << "DEBUG: Got pointer: " << raw_ptr << "\n";
-            
             auto print_fn = [](const char* fmt, ...) {
                 va_list args;
                 va_start(args, fmt);
@@ -847,15 +843,34 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                 vprintf(fmt, args);
                 va_end(args);
             };
-            
-            std::cout << "DEBUG: About to dump struct at " << raw_ptr << "\n";
-            __builtin_dump_struct(raw_ptr, print_fn);
-            std::cout << "DEBUG: Dump complete\n";
-            
+
+            // First dump the expr2t structure
+            std::cout << "DEBUG: Dumping expr2t structure:\n";
+            const expr2t* expr_ptr = expr.get();
+            if(expr_ptr) {
+                __builtin_dump_struct(expr_ptr, print_fn);
+                
+                // Print type information
+                std::cout << "DEBUG: Expression type info:\n";
+                std::cout << "Expr ID: " << get_expr_id(expr) << "\n";
+                if(expr->type) {
+                    std::cout << "Type ID: " << get_type_id(expr->type) << "\n";
+                }
+                
+                // If it's a pointer to a struct, try to get the struct info
+                if(is_pointer_type(expr->type)) {
+                    const pointer_type2t &ptr_type = to_pointer_type(expr->type);
+                    if(is_struct_type(ptr_type.subtype)) {
+                        std::cout << "DEBUG: Found pointer to struct type\n";
+                        const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
+                        std::cout << "Struct has " << struct_type.members.size() << " members\n";
+                    }
+                }
+            }
         } catch(const std::exception& e) {
-            std::cout << "DEBUG: Exception during struct dump: " << e.what() << "\n";
+            std::cout << "DEBUG: Exception during struct analysis: " << e.what() << "\n";
         } catch(...) {
-            std::cout << "DEBUG: Unknown exception during struct dump\n";
+            std::cout << "DEBUG: Unknown exception during struct analysis\n";
         }
         
         if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
