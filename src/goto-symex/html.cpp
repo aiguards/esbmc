@@ -828,62 +828,94 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "null";
     }
 
-    // Handle pointers 
+    // For pointer type (DeviceRecord*, etc)
     if(is_pointer_type(expr->type)) {
         const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-        std::string ptr_val = from_expr(ns, "", expr);
         
-        // Try to dereference and get actual struct
-        if(!ptr_val.empty() && ptr_val != "0" && ptr_val != "NULL") {
-            try {
-                expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
-                if(!is_nil_expr(deref_expr)) {
-                    if(is_struct_type(deref_expr->type)) {
-                        const struct_type2t& struct_type = to_struct_type(deref_expr->type);
-                        json obj;
+        // Try to get the actual value via dereference
+        try {
+            expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
+            
+            if(!is_nil_expr(deref_expr) && is_struct_type(deref_expr->type)) {
+                // Found a struct - get all its members
+                const struct_type2t& struct_type = to_struct_type(deref_expr->type);
+                json struct_data;
+
+                std::cout << "DEBUG: Found struct with " << struct_type.members.size() 
+                         << " members\n";
+
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    const irep_idt& member_name = struct_type.member_names[i];
+                    const type2tc& member_type = struct_type.members[i];
+
+                    std::cout << "DEBUG: Processing member " << id2string(member_name) << "\n";
+                    
+                    // Get member value
+                    expr2tc member_expr = expr2tc(std::make_shared<member2t>(
+                        member_type, deref_expr, member_name));
                         
-                        for(size_t i = 0; i < struct_type.members.size(); i++) {
-                            const irep_idt& member_name = struct_type.member_names[i];
-                            expr2tc member_expr = expr2tc(std::make_shared<member2t>(
-                                struct_type.members[i], deref_expr, member_name));
-                            
-                            std::string member_val = from_expr(ns, "", member_expr);
-                            if(!member_val.empty()) {
-                                // Clean up value
-                                if(member_val[0] == '"' && member_val.back() == '"') {
-                                    member_val = member_val.substr(1, member_val.length() - 2);
-                                }
-                                obj[id2string(member_name)] = member_val;
-                            }
+                    // Handle member based on its type
+                    if(is_array_type(member_type)) {
+                        // String arrays (char arrays)
+                        std::string str_val = from_expr(ns, "", member_expr);
+                        if(str_val.front() == '"' && str_val.back() == '"') {
+                            str_val = str_val.substr(1, str_val.length() - 2);
                         }
-                        return obj.dump();
+                        struct_data[id2string(member_name)] = str_val;
+                    }
+                    else if(is_pointer_type(member_type)) {
+                        // For pointer members, get actual value
+                        std::string ptr_val = from_expr(ns, "", member_expr);
+                        if(ptr_val == "NULL" || ptr_val == "0") {
+                            struct_data[id2string(member_name)] = nullptr;
+                        } else {
+                            struct_data[id2string(member_name)] = ptr_val;
+                        }
+                    }
+                    else if(is_constant_int2t(member_expr)) {
+                        const constant_int2t& c = to_constant_int2t(member_expr);
+                        struct_data[id2string(member_name)] = integer2string(c.value);
+                    }
+                    else {
+                        std::string val = from_expr(ns, "", member_expr);
+                        try {
+                            size_t pos;
+                            long long num = std::stoll(val, &pos);
+                            if(pos == val.length()) {
+                                struct_data[id2string(member_name)] = num;
+                            } else {
+                                struct_data[id2string(member_name)] = val;
+                            }
+                        } catch(...) {
+                            struct_data[id2string(member_name)] = val;
+                        }
                     }
                 }
-            } catch(...) {}
+                std::cout << "DEBUG: Captured struct data: " << struct_data.dump() << "\n";
+                return struct_data.dump();
+            }
+        } catch(const std::exception& e) {
+            std::cout << "DEBUG: Error dereferencing pointer: " << e.what() << "\n";
         }
-        
-        // If we can't dereference, handle as null/invalid
-        if(ptr_val == "0" || ptr_val == "NULL" || ptr_val.empty()) {
+
+        // If we couldn't get struct data, return pointer value
+        std::string ptr_val = from_expr(ns, "", expr);
+        if(ptr_val.empty() || ptr_val == "NULL" || ptr_val == "0") {
             return "0";
-        } else if(ptr_val.find("invalid") != std::string::npos) {
-            return "\"invalid-object\"";
         }
-        return ptr_val;
+        return "\"" + ptr_val + "\"";
     }
 
-    // Handle basic types directly
+    // Handle direct values (non-pointers)
     if(is_constant_int2t(expr)) {
         const constant_int2t& c = to_constant_int2t(expr);
         return integer2string(c.value);
     }
-    
-    // Default to string representation
+
     std::string val = from_expr(ns, "", expr);
-    if(val.empty()) {
-        return "\"\"";
-    }
-    
-    // Try to convert to number if possible
+    if(val.empty()) return "\"\"";
+
+    // Try to convert to number
     try {
         size_t pos;
         long long num = std::stoll(val, &pos);
@@ -891,7 +923,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
             return std::to_string(num);
         }
     } catch(...) {}
-    
+
     return "\"" + val + "\"";
 }
 
