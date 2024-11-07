@@ -46,22 +46,22 @@ bool assign_params_as_non_det::runOnFunction(
       code_assignt assign(lhs, address_of_exprt(symbol_exprt(s.name, s.type)));
       assign.location() = l;
       
-      // create if statement
-      codet if_code("ifthenelse");
-      if_code.operands().resize(3);
-      if_code.op0() = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
-      if_code.op1() = assign;
-      // op2 remains empty for 'else'
+      // // create if statement
+      // codet if_code("ifthenelse");
+      // if_code.operands().resize(3);
+      // if_code.op0() = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
+      // if_code.op1() = assign;
+      // // op2 remains empty for 'else'
       
       // move it to goto program
-      goto_programt tmp;
-      goto_programt::targett if_statement = tmp.add_instruction(GOTO);
-      if_statement->location = l;
-      if_statement->function = it->location.get_function();
-      migrate_expr(if_code, if_statement->code);
+      // goto_programt tmp;
+      // goto_programt::targett if_statement = tmp.add_instruction(GOTO);
+      // if_statement->location = l;
+      // if_statement->function = it->location.get_function();
+      // migrate_expr(if_code, if_statement->code);
       
-      // insert
-      goto_program.insert_swap(it++, *if_statement);
+      // // insert
+      // goto_program.insert_swap(it++, *if_statement);
       --it;
     }
     else
