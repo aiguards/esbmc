@@ -807,21 +807,55 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
 void print_expr_info(const std::string& context, const expr2tc& expr) {
     std::cout << "\nDEBUG " << context << ":\n";
     std::cout << "  - expr is_nil: " << is_nil_expr(expr) << "\n";
-    // std::cout << "  - type: " << expr->type->id << "\n";
-    if(is_pointer_type(expr->type)) {
-        const pointer_type2t& ptr = to_pointer_type(expr->type);
-        // std::cout << "  - points to type: " << ptr.subtype->id << "\n";
-    }
-    if(is_struct_type(expr->type)) {
-        const struct_type2t& s = to_struct_type(expr->type);
-        std::cout << "  - struct members: " << s.members.size() << "\n";
-        for(size_t i = 0; i < s.members.size(); i++) {
-            std::cout << "    - " << id2string(s.member_names[i]) << "\n";
-        }
+
+    // Helper lambda for recursive struct dumping
+    std::function<void(const expr2t*, const std::string&, int)> dump_recursive = 
+        [&dump_recursive](const expr2t* ptr, const std::string& prefix, int depth) {
+            if (!ptr || depth > 10) return; // Prevent infinite recursion
+            
+            std::cout << std::string(depth * 2, ' ') << prefix << " at " << ptr << "\n";
+            
+            auto print_fn = [depth](const char* fmt, ...) {
+                va_list args;
+                va_start(args, fmt);
+                std::cout << std::string(depth * 2, ' ') << "DEBUG struct dump: ";
+                vprintf(fmt, args);
+                va_end(args);
+            };
+
+            __builtin_dump_struct(ptr, print_fn);
+            
+            // Try to dump the type
+            if (ptr->type) {
+                const type2t* type_ptr = ptr->type.get();
+                __builtin_dump_struct(type_ptr, print_fn);
+                
+                // Handle different expression types
+                if (is_struct_type(ptr->type)) {
+                    const struct_type2t& s = to_struct_type(ptr->type);
+                    for (size_t i = 0; i < s.members.size(); i++) {
+                        if (const expr2t* member = dynamic_cast<const expr2t*>(s.members[i].get())) {
+                            dump_recursive(member, 
+                                "member " + id2string(s.member_names[i]), depth + 1);
+                        }
+                    }
+                }
+                else if (is_pointer_type(ptr->type)) {
+                    const pointer_type2t& ptr_type = to_pointer_type(ptr->type);
+                    if (const expr2t* subtype = dynamic_cast<const expr2t*>(ptr_type.subtype.get())) {
+                        dump_recursive(subtype, "pointed_type", depth + 1);
+                    }
+                }
+            }
+    };
+
+    const expr2t* expr_ptr = expr.get();
+    if(expr_ptr) {
+        dump_recursive(expr_ptr, "root", 0);
     }
 }
 
-std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
+std::string get_struct_values(const namespacet& ns, const expr2tc& expr, int depth = 0) {
     std::cout << "\nDEBUG Detailed type analysis ---------------\n";
     
     if(is_nil_expr(expr)) {
@@ -832,7 +866,8 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         std::cout << "DEBUG: Pointer analysis:\n";
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
-
+        
+        // First use clang dump to understand the memory layout
         try {
             auto print_fn = [](const char* fmt, ...) {
                 va_list args;
@@ -842,32 +877,54 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                 va_end(args);
             };
 
-            const pointer_type2t &ptr_type = to_pointer_type(expr->type);
             std::cout << "DEBUG: Pointer type details:\n";
-            
-            if(is_struct_type(ptr_type.subtype)) {
-                const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
-                std::cout << "DEBUG: Struct has " << struct_type.members.size() << " members\n";
-                
-                for(size_t i = 0; i < struct_type.members.size(); i++) {
-                    std::cout << "Member " << i << ":\n";
-                    std::cout << "  Name: " << struct_type.member_names[i] << "\n";
-                    std::cout << "  Type ID: " << get_type_id(struct_type.members[i]) << "\n";
-                }
-            }
-            
             const expr2t* expr_ptr = expr.get();
             if(expr_ptr) {
                 std::cout << "DEBUG: About to dump expr at " << expr_ptr << "\n";
                 __builtin_dump_struct(expr_ptr, print_fn);
             }
 
+            // Now attempt to get the underlying structure
+            const pointer_type2t &ptr_type = to_pointer_type(expr->type);
+            if(is_struct_type(ptr_type.subtype)) {
+                const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
+                json struct_data;
+                
+                // Log the struct layout we found
+                std::cout << "DEBUG: Struct analysis after dump:\n";
+                std::cout << "  Members found: " << struct_type.members.size() << "\n";
+                
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    const irep_idt& member_name = struct_type.member_names[i];
+                    const type2tc& member_type = struct_type.members[i];
+                    
+                    std::cout << "  Member " << i << ":\n";
+                    std::cout << "    Name: " << member_name << "\n";
+                    std::cout << "    Type ID: " << get_type_id(member_type) << "\n";
+                    
+                    try {
+                        // Try to create a member access expression
+                        expr2tc member_expr = member2tc(member_type, expr, member_name);
+                        
+                        // Log the expression we created
+                        std::cout << "    Created member expression\n";
+                        print_expr_info("member_expr", member_expr);
+                        
+                        // Recursively analyze this member
+                        struct_data[id2string(member_name)] = get_struct_values(ns, member_expr, depth + 1);
+                    } catch(const std::exception& e) {
+                        std::cout << "    Error accessing member: " << e.what() << "\n";
+                        struct_data[id2string(member_name)] = "access-error";
+                    }
+                }
+                
+                return struct_data.dump();
+            }
         } catch(const std::exception& e) {
-            std::cout << "DEBUG: Exception: " << e.what() << "\n";
-        } catch(...) {
-            std::cout << "DEBUG: Unknown exception\n";
+            std::cout << "DEBUG: Exception during struct analysis: " << e.what() << "\n";
         }
-        
+
+        // Fallback to basic pointer value if we couldn't analyze structure
         if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
             return "null";
         }
@@ -877,12 +934,58 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "\"" + raw_val + "\"";
     }
     
+    if(is_struct_type(expr->type)) {
+        try {
+            auto print_fn = [](const char* fmt, ...) {
+                va_list args;
+                va_start(args, fmt);
+                std::cout << "DEBUG struct dump: ";
+                vprintf(fmt, args);
+                va_end(args);
+            };
+
+            // Dump the struct layout first
+            const expr2t* expr_ptr = expr.get();
+            if(expr_ptr) {
+                __builtin_dump_struct(expr_ptr, print_fn);
+            }
+
+            const struct_type2t &struct_type = to_struct_type(expr->type);
+            json struct_data;
+            
+            std::cout << "DEBUG: Direct struct analysis:\n";
+            std::cout << "  Members: " << struct_type.members.size() << "\n";
+            
+            for(size_t i = 0; i < struct_type.members.size(); i++) {
+                const irep_idt& member_name = struct_type.member_names[i];
+                const type2tc& member_type = struct_type.members[i];
+                
+                std::cout << "  Accessing member " << member_name << "\n";
+                
+                try {
+                    expr2tc member_expr = member2tc(member_type, expr, member_name);
+                    print_expr_info("member_expr", member_expr);
+                    struct_data[id2string(member_name)] = get_struct_values(ns, member_expr, depth + 1);
+                } catch(const std::exception& e) {
+                    std::cout << "  Error accessing member: " << e.what() << "\n";
+                    struct_data[id2string(member_name)] = "access-error";
+                }
+            }
+            return struct_data.dump();
+        } catch(const std::exception& e) {
+            std::cout << "DEBUG: Exception in struct analysis: " << e.what() << "\n";
+            return "\"struct-access-failed\"";
+        }
+    }
+
+    // Handle primitive types
     try {
         std::string val = from_expr(ns, "", expr);
         if(val.empty()) {
             return "\"\"";
         }
 
+        // Try to parse as number first
         try {
             size_t pos;
             long long num = std::stoll(val, &pos);
@@ -893,6 +996,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
 
         return "\"" + val + "\"";
     } catch(...) {
+        std::cout << "DEBUG: Exception getting primitive value\n";
         return "null";
     }
 }
