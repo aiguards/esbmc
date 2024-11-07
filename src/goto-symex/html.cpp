@@ -24,6 +24,79 @@
 #include <util/std_expr.h>
 #include <util/mp_arith.h>
 #include <memory>
+#include <irep2/irep2_type.h>
+#include <boost/pfr.hpp>
+// #include <boost/pfr/precise/core.hpp>
+
+template<typename T>
+void print_struct_fields(const T& obj, const std::string& prefix = "") {
+    try {
+        boost::pfr::for_each_field(obj, [&prefix](const auto& field, std::size_t idx) {
+            std::cout << prefix << "field " << idx << ": " << field << '\n';
+        });
+    } catch(const std::exception& e) {
+        std::cout << prefix << "Failed to print struct fields: " << e.what() << '\n';
+    }
+}
+
+// Helper for ESBMC expr inspection using PFR when possible
+// void inspect_expr_pfr(const expr2tc& expr, const namespacet& ns) {
+//     std::cout << "\nPFR Struct Inspection:\n";
+    
+//     if(is_nil_expr(expr)) {
+//         std::cout << "Nil expression\n";
+//         return;
+//     }
+
+//     // Try to print the base expr2t
+//     std::cout << "Base expression structure:\n";
+//     print_struct_fields(*expr.get(), "  ");
+    
+//     if(is_pointer_type(expr->type)) {
+//         try {
+//             expr2tc deref = dereference2tc(expr->type, expr);
+//             if(!is_nil_expr(deref)) {
+//                 std::cout << "\nDereferenced structure:\n";
+//                 print_struct_fields(*deref.get(), "  ");
+                
+//                 // If it's our DeviceRecord struct
+//                 if(is_struct_type(deref->type)) {
+//                     const struct_type2t& struct_type = to_struct_type(deref->type);
+//                     std::cout << "\nStruct members:\n";
+                    
+//                     for(size_t i = 0; i < struct_type.members.size(); i++) {
+//                         try {
+//                             expr2tc member = member2tc(struct_type.members[i], deref, 
+//                                                      struct_type.member_names[i]);
+//                             std::cout << "  Member " << id2string(struct_type.member_names[i]) << ":\n";
+//                             print_struct_fields(*member.get(), "    ");
+//                         } catch(const std::exception& e) {
+//                             std::cout << "  Failed to access member " 
+//                                     << id2string(struct_type.member_names[i]) 
+//                                     << ": " << e.what() << '\n';
+//                         }
+//                     }
+//                 }
+//             }
+//         } catch(const std::exception& e) {
+//             std::cout << "Dereference failed: " << e.what() << '\n';
+//         }
+//     }
+    
+//     // Try to print type information
+//     if(!is_nil_type(expr->type)) {
+//         std::cout << "\nType structure:\n";
+//         print_struct_fields(*expr->type.get(), "  ");
+        
+//         if(is_pointer_type(expr->type)) {
+//             const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+//             if(!is_nil_type(ptr_type.subtype)) {
+//                 std::cout << "\nPointed-to type structure:\n";
+//                 print_struct_fields(*ptr_type.subtype.get(), "  ");
+//             }
+//         }
+//     }
+// }
 
 using json = nlohmann::json;
 
@@ -1496,10 +1569,62 @@ void inspect_memory(const expr2tc& expr, const namespacet& ns, int depth = 0) {
     }
 }
 
+std::string extract_array_string(const expr2tc& array_expr) {
+    // if(is_constant_array2t(array_expr)) {
+    //     const constant_array2t& arr = to_constant_array2t(array_expr);
+    //     std::string result;
+    //     for(const auto& elem : arr.datatype_members) {
+    //         if(is_constant_char2t(elem)) {
+    //             char c = to_constant_char2t(elem).value;
+    //             if(c != '\0') // Stop at null terminator
+    //                 result += c;
+    //         }
+    //     }
+    //     return result;
+    // }
+    return "<non-constant-array>";
+}
+
+void print_device_struct(const expr2tc& expr, const namespacet& ns) {
+    try {
+        json device_json;
+        
+        if(is_pointer_type(expr->type)) {
+            expr2tc deref = dereference2tc(expr->type, expr);
+            if(is_struct_type(deref->type)) {
+                // print_struct(deref);
+                // print_struct(deref);
+
+
+                const struct_type2t& struct_type = to_struct_type(deref->type);
+                
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    expr2tc member = member2tc(struct_type.members[i], deref, 
+                                             struct_type.member_names[i]);
+                    std::string member_name = id2string(struct_type.member_names[i]);
+                    // print_struct(member);
+                    
+                    if(is_array_type(struct_type.members[i])) {
+                        device_json[member_name] = extract_array_string(member);
+                    } else {
+                        device_json[member_name] = from_expr(ns, "", member);
+                    }
+                }
+                
+                std::cout << "Device contents:\n" 
+                         << device_json.dump(2) << std::endl;
+            }
+        }
+    } catch(const std::exception& e) {
+        std::cout << "Failed to print device: " << e.what() << '\n';
+    }
+}
+
 // Main inspection function that tries all approaches
 void inspect_all_approaches(const expr2tc& expr, const namespacet& ns) {
     std::cout << "\n=== Trying all inspection approaches ===\n";
-    
+    print_device_struct(expr, ns);
+
     inspect_via_type_system(expr, ns);
     inspect_via_deref(expr, ns);
     inspect_via_symbol(expr, ns);
