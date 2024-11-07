@@ -835,30 +835,28 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        if(is_struct_type(to_pointer_type(expr->type).subtype)) {
+        // Check for interesting pointers that might be worth dumping
+        if(raw_val.find("dynamic_7_array") != std::string::npos ||
+           (raw_val.find("struct") != std::string::npos && 
+            raw_val.find("0") == std::string::npos && 
+            raw_val.find("invalid-object") == std::string::npos)) {
+            
             try {
                 const expr2t* raw_ptr = expr.get();
-                std::cout << "DEBUG: Got pointer: " << raw_ptr << "\n";
-                
-                if(raw_ptr != nullptr) {
+                if(raw_ptr) {
+                    std::cout << "DEBUG: About to dump struct at " << raw_ptr << "\n";
                     auto print_fn = [](const char* fmt, ...) {
                         va_list args;
                         va_start(args, fmt);
-                        std::cout << "DEBUG dump output: ";
+                        std::cout << "DEBUG struct dump: ";
                         vprintf(fmt, args);
                         va_end(args);
                     };
-                    
-                    std::cout << "DEBUG: About to dump struct at address " << raw_ptr << "\n";
-                    __builtin_dump_struct(raw_ptr, print_fn);  // HERE'S THE ACTUAL CALL
+                    __builtin_dump_struct(raw_ptr, print_fn);
                     std::cout << "DEBUG: Dump complete\n";
-                } else {
-                    std::cout << "DEBUG: Invalid pointer value\n";
                 }
             } catch(const std::exception& e) {
                 std::cout << "DEBUG: Exception during struct dump: " << e.what() << "\n";
-            } catch(...) {
-                std::cout << "DEBUG: Unknown exception during struct dump\n";
             }
         }
         
@@ -878,7 +876,6 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
             return "\"\"";
         }
 
-        // Try to convert to number if possible
         try {
             size_t pos;
             long long num = std::stoll(val, &pos);
