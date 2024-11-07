@@ -1115,6 +1115,124 @@ std::string get_assignment_message(const namespacet& ns,
     return msg + value_str;
 }
 
+// Helper to recursively serialize a value in the coverage JSON
+json serialize_value(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen) {
+    if(is_nil_expr(expr)) {
+        return nullptr;
+    }
+
+    try {
+        // For struct types
+        if(is_struct_type(expr->type)) {
+            const struct_type2t& struct_type = to_struct_type(expr->type);
+            
+            json struct_data = json::object();
+            struct_data["__type"] = id2string(struct_type.name);
+            
+            // Serialize each member
+            for(size_t i = 0; i < struct_type.members.size(); i++) {
+                const irep_idt& member_name = struct_type.member_names[i];
+                const type2tc& member_type = struct_type.members[i];
+                
+                try {
+                    expr2tc member_expr = member2tc(member_type, expr, struct_type.member_names[i]);
+                    struct_data[id2string(member_name)] = serialize_value(ns, member_expr, seen);
+                }
+                catch(const std::runtime_error&) {
+                    struct_data[id2string(member_name)] = nullptr;
+                }
+            }
+            return struct_data;
+        }
+        // For pointer types
+        else if(is_pointer_type(expr->type)) {
+            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+            std::string addr_str = from_expr(ns, "", expr);
+            
+            // Check for circular references
+            if(!seen.insert(addr_str).second) {
+                return {
+                    {"__type", "pointer"},
+                    {"address", addr_str},
+                    {"circular", true}
+                };
+            }
+            
+            try {
+                expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
+                if(!is_nil_expr(deref_expr)) {
+                    return {
+                        {"__type", "pointer"},
+                        {"address", addr_str},
+                        {"value", serialize_value(ns, deref_expr, seen)}
+                    };
+                }
+            } catch(const std::runtime_error&) {}
+            
+            return {
+                {"__type", "pointer"},
+                {"address", addr_str},
+                {"value", nullptr}
+            };
+        }
+        // For array types
+        else if(is_array_type(expr->type)) {
+            const array_type2t& arr_type = to_array_type(expr->type);
+            json array_data = json::array();
+            
+            if(is_constant_int2t(arr_type.array_size)) {
+                const constant_int2t& size = to_constant_int2t(arr_type.array_size);
+                size_t arr_size = size.value.to_uint64();
+                
+                for(size_t i = 0; i < arr_size && i < 10; i++) {
+                    try {
+                        expr2tc index_expr = index2tc(
+                            arr_type.subtype,
+                            expr,
+                            constant_int2tc(index_type2(), i)
+                        );
+                        array_data.push_back(serialize_value(ns, index_expr, seen));
+                    }
+                    catch(const std::runtime_error&) {
+                        array_data.push_back(nullptr);
+                    }
+                }
+            }
+            
+            return {
+                {"__type", "array"},
+                {"elements", array_data}
+            };
+        }
+        // For primitive types
+        else {
+            return from_expr(ns, "", expr);
+        }
+    }
+    catch(const std::runtime_error&) {
+        return nullptr;
+    }
+}
+
+// Modified get_assignment_message for JSON output
+json get_assignment_json(const namespacet& ns, const expr2tc& lhs, const expr2tc& value) {
+    std::set<std::string> seen;
+    
+    json assignment;
+    assignment["lhs"] = from_expr(ns, "", lhs);
+    assignment["lhs_type"] = type_id_to_string(lhs->type->type_id);
+    
+    if(!is_nil_expr(value)) {
+        assignment["rhs"] = serialize_value(ns, value, seen);
+        assignment["rhs_type"] = type_id_to_string(value->type->type_id);
+    } else {
+        assignment["rhs"] = nullptr;
+        assignment["rhs_type"] = "nil";
+    }
+    
+    return assignment;
+}
+
 void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
     json test_entry;
     test_entry["steps"] = json::array();
@@ -1174,26 +1292,6 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
                     step_data["function"] = function;
                     step_data["step_number"] = step_count++;
 
-                    // Capture initial values before any modifications
-                    if(!initial_state_captured && step.is_assignment()) {
-                        std::string var_name = from_expr(ns, "", step.lhs);
-                        
-                        if(processed_vars.find(var_name) == processed_vars.end()) {
-                            processed_vars.insert(var_name);
-                            
-                            if(is_pointer_type(step.lhs->type)) {
-                                const pointer_type2t& ptr_type = to_pointer_type(step.lhs->type);
-                                if(is_struct_type(ptr_type.subtype)) {
-                                    initial_values[var_name] = json::parse(get_struct_values(ns, step.value));
-                                } else {
-                                    initial_values[var_name] = from_expr(ns, "", step.value);
-                                }
-                            } else {
-                                initial_values[var_name] = from_expr(ns, "", step.value);
-                            }
-                        }
-                    }
-
                     // Handle different step types
                     if(step.is_assert()) {
                         if(!step.guard) {
@@ -1217,14 +1315,36 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
                     }
                     else if(step.is_assignment()) {
                         step_data["type"] = "assignment";
-                        step_data["message"] = get_assignment_message(ns, step.lhs, step.value);
+                        // Get the variable name for tracking initial values
+                        std::string var_name = from_expr(ns, "", step.lhs);
+                        
+                        // Enhanced assignment processing with full struct information
+                        step_data["assignment"] = get_assignment_json(ns, step.lhs, step.value);
+
+                        // Track initial values with full struct/pointer information
+                        if(!initial_state_captured && processed_vars.find(var_name) == processed_vars.end()) {
+                            processed_vars.insert(var_name);
+                            std::set<std::string> seen_values;
+                            json value_info = {
+                                {"name", var_name},
+                                {"type", type_id_to_string(step.lhs->type->type_id)},
+                                {"value", serialize_value(ns, step.value, seen_values)}
+                            };
+                            initial_values[var_name] = value_info;
+
+                            // Debug output
+                            std::cout << "DEBUG: Captured initial value for " << var_name << std::endl;
+                            std::cout << "DEBUG: Value type: " << type_id_to_string(step.lhs->type->type_id) << std::endl;
+                        }
                     }
-                    else if(step.pc->is_function_call()) {  // Changed from step.is_function_call()
+                    else if(step.pc->is_function_call()) {
                         step_data["type"] = "function_call";
-                        step_data["message"] = fmt::format(
-                            "Function argument '{}' = '{}'",
-                            from_expr(ns, "", step.lhs),
-                            from_expr(ns, "", step.value));
+                        // Enhanced function call processing
+                        std::set<std::string> seen_args;
+                        step_data["function_call"] = {
+                            {"argument", from_expr(ns, "", step.lhs)},
+                            {"value", serialize_value(ns, step.value, seen_args)}
+                        };
                     }
                     else {
                         step_data["type"] = "other";
