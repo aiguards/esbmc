@@ -829,89 +829,98 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "null";
     }
 
-    // Try to get DeviceRecord specific information
+    // Try to extract struct info directly from the expression
     try {
+        // Get raw debug info first
+        std::string debug_str = expr->pretty(0);
+        std::cout << "DEBUG: Raw expression: " << debug_str << "\n";
+        
+        json struct_data;
+
+        // For DeviceRecord specific fields
+        std::vector<std::string> field_names = {
+            "duid", "client_id", "location_id", "device_type", 
+            "federated_identity", "user_presence_exp"
+        };
+
         if(is_pointer_type(expr->type)) {
             const pointer_type2t& ptr_type = to_pointer_type(expr->type);
             std::cout << "DEBUG: Pointer analysis:\n";
             std::string raw_val = from_expr(ns, "", expr);
             std::cout << "Raw pointer value: " << raw_val << "\n";
 
-            // Multiple attempts to get struct data
-            std::vector<expr2tc> attempts;
-
-            // 1. Direct dereference
-            attempts.push_back(expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr)));
-
-            // 2. Try to get as symbol
-            if(is_symbol2t(expr)) {
-                const symbol2t& sym = to_symbol2t(expr);
-                attempts.push_back(expr2tc(std::make_shared<symbol2t>(ptr_type.subtype, sym.thename)));
-            }
-
-            // Process each attempt
-            for(const auto& attempt : attempts) {
-                std::cout << "Attempting struct access...\n";
+            try {
+                expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
                 
-                try {
-                    json struct_data;
-                    bool found_data = false;
-
-                    // Try to access DeviceRecord fields directly
-                    std::vector<std::string> field_names = {
-                        "duid", "client_id", "location_id", "device_type", 
-                        "federated_identity", "user_presence_exp"
-                    };
-
-                    for(const auto& field : field_names) {
-                        try {
-                            expr2tc field_expr = expr2tc(std::make_shared<member2t>(
-                                attempt->type, attempt, field));
+                for(const auto& field : field_names) {
+                    try {
+                        // Create member expression for each field
+                        expr2tc field_expr = expr2tc(std::make_shared<member2t>(
+                            deref_expr->type, deref_expr, field));
                             
-                            // For string fields (char arrays)
-                            if(is_array_type(field_expr->type)) {
-                                std::string val = from_expr(ns, "", field_expr);
-                                if(!val.empty()) {
-                                    // Clean up string value
-                                    if(val.front() == '"' && val.back() == '"') {
-                                        val = val.substr(1, val.length() - 2);
+                        // Get raw field value
+                        std::string field_val;
+                        if(is_array_type(field_expr->type)) {
+                            // For char arrays (strings)
+                            field_val = field_expr->pretty(0);
+                            // Clean up the value
+                            if(field_val.find("array") != std::string::npos) {
+                                size_t start = field_val.find("value: ");
+                                if(start != std::string::npos) {
+                                    field_val = field_val.substr(start + 7);
+                                    if(!field_val.empty() && field_val != "NULL") {
+                                        struct_data[field] = field_val;
                                     }
-                                    struct_data[field] = val;
-                                    found_data = true;
                                 }
                             }
-                            // For time_t field
-                            else if(field == "user_presence_exp") {
-                                std::string val = from_expr(ns, "", field_expr);
-                                if(!val.empty()) {
-                                    struct_data[field] = val;
-                                    found_data = true;
-                                }
-                            }
-                        } catch(...) {
-                            std::cout << "Failed to access field: " << field << "\n";
                         }
+                        else if(is_constant_int2t(field_expr)) {
+                            const constant_int2t& c = to_constant_int2t(field_expr);
+                            struct_data[field] = integer2string(c.value);
+                        }
+                        else {
+                            field_val = field_expr->pretty(0);
+                            if(!field_val.empty() && field_val != "NULL") {
+                                struct_data[field] = field_val;
+                            }
+                        }
+                    } catch(const std::exception& e) {
+                        std::cout << "Failed to get field " << field << ": " << e.what() << "\n";
                     }
-
-                    if(found_data) {
-                        std::string result = struct_data.dump();
-                        std::cout << "DEBUG: Captured struct data: " << result << "\n";
-                        return result;
-                    }
-
-                } catch(const std::exception& e) {
-                    std::cout << "Failed attempt: " << e.what() << "\n";
                 }
+
+                // Try to get any additional debug info
+                if(const type2t* subtype = ptr_type.subtype.get()) {
+                    std::string type_info = subtype->pretty(0);
+                    std::cout << "DEBUG: Subtype info: " << type_info << "\n";
+                    struct_data["__type_info"] = type_info;
+                }
+
+                if(!struct_data.empty()) {
+                    std::string result = struct_data.dump();
+                    std::cout << "DEBUG: Captured struct data: " << result << "\n";
+                    return result;
+                }
+
+            } catch(const std::exception& e) {
+                std::cout << "DEBUG: Failed to dereference: " << e.what() << "\n";
             }
 
-            // If we couldn't get struct data, format the raw value
+            // If we couldn't get struct data, try to get raw debug info
             if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
-                return "null";
+                struct_data["raw_value"] = "null";
+            } else if(raw_val.find("invalid-object") != std::string::npos) {
+                struct_data["raw_value"] = "invalid-object";
+            } else {
+                struct_data["raw_value"] = raw_val;
             }
-            if(raw_val.find("invalid-object") != std::string::npos) {
-                return "\"invalid-object\"";
-            }
-            return "\"" + raw_val + "\"";
+
+            // Include debug expression info
+            struct_data["debug_expr"] = debug_str;
+
+            std::string result = struct_data.dump();
+            std::cout << "DEBUG: Captured value: " << result << "\n";
+            return result;
         }
     } catch(const std::exception& e) {
         std::cout << "DEBUG: Exception in struct analysis: " << e.what() << "\n";
