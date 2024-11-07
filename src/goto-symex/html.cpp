@@ -852,29 +852,45 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         std::vector<expr2tc> deref_attempts;
         
         try {
-            // Standard dereference
-            std::cout << "Attempting standard dereference...\n";
+            // Collect all possible dereferencing techniques
+            std::cout << "Attempting multiple dereference techniques...\n";
+
+            // 1. Standard dereference
             deref_attempts.push_back(expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr)));
-            
-            // Try with symbol if available
+
+            // 2. Try symbol-based dereferencing
             if(is_symbol2t(expr)) {
-                std::cout << "Attempting symbol dereference...\n";
                 const symbol2t& sym = to_symbol2t(expr);
-                expr2tc sym_expr = expr2tc(std::make_shared<symbol2t>(ptr_type.subtype, sym.thename));
-                deref_attempts.push_back(sym_expr);
+                deref_attempts.push_back(expr2tc(std::make_shared<symbol2t>(ptr_type.subtype, sym.thename)));
             }
-            
-            // Try array index if it might be an array
+
+            // 3. Try dynamic object access
+            if(raw_val.find("dynamic_") != std::string::npos) {
+                try {
+                    size_t array_start = raw_val.find("[");
+                    if(array_start != std::string::npos) {
+                        std::string base_name = raw_val.substr(0, array_start);
+                        expr2tc dynamic_expr = expr2tc(std::make_shared<symbol2t>(ptr_type.subtype, base_name));
+                        deref_attempts.push_back(dynamic_expr);
+                    }
+                } catch(...) {}
+            }
+
+            // 4. Try to handle array-like structures
             if(is_array_type(ptr_type.subtype)) {
-                std::cout << "Attempting array index access...\n";
-                expr2tc idx = expr2tc(std::make_shared<constant_int2t>(type2tc(), BigInt(0)));
-                deref_attempts.push_back(expr2tc(std::make_shared<index2t>(ptr_type.subtype, expr, idx)));
+                for(int i = 0; i < 5; i++) { // Try first few elements
+                    expr2tc idx = expr2tc(std::make_shared<constant_int2t>(type2tc(), BigInt(i)));
+                    deref_attempts.push_back(expr2tc(std::make_shared<index2t>(ptr_type.subtype, expr, idx)));
+                }
             }
 
             // Process all dereferencing attempts
+            json combined_data;
+            bool found_valid_data = false;
+
             for(const auto& deref_expr : deref_attempts) {
                 if(!is_nil_expr(deref_expr)) {
-                    std::cout << "Successful dereference attempt\n";
+                    std::cout << "Processing dereference attempt\n";
                     
                     // If it's a struct, process it
                     if(is_struct_type(deref_expr->type)) {
@@ -888,93 +904,80 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                             try {
                                 expr2tc member_expr = expr2tc(std::make_shared<member2t>(
                                     member_type, deref_expr, member_name));
-                                
-                                // Try to get direct value first
+
+                                // Try multiple approaches to get member value
                                 std::string member_val;
+                                bool value_found = false;
+
+                                // 1. Try direct constant values
                                 if(is_constant_string2t(member_expr)) {
                                     const constant_string2t& str = to_constant_string2t(member_expr);
                                     member_val = str.value.as_string();
+                                    value_found = true;
                                 }
                                 else if(is_constant_int2t(member_expr)) {
                                     const constant_int2t& c = to_constant_int2t(member_expr);
                                     member_val = integer2string(c.value);
-                                }
-                                else {
-                                    // Recursively get member value
-                                    member_val = get_struct_values(ns, member_expr);
+                                    value_found = true;
                                 }
                                 
-                                struct_data[id2string(member_name)] = member_val;
+                                // 2. Try symbol-based access
+                                if(!value_found && is_symbol2t(member_expr)) {
+                                    const symbol2t& sym = to_symbol2t(member_expr);
+                                    member_val = id2string(sym.thename);
+                                    value_found = true;
+                                }
+
+                                // 3. Recursive extraction for complex types
+                                if(!value_found) {
+                                    member_val = get_struct_values(ns, member_expr);
+                                }
+
+                                if(!member_val.empty() && member_val != "null") {
+                                    struct_data[id2string(member_name)] = member_val;
+                                    found_valid_data = true;
+                                }
                                 
                             } catch(const std::exception& e) {
                                 std::cout << "Member access error: " << e.what() << "\n";
-                                struct_data[id2string(member_name)] = "<error>";
                             }
                         }
                         
                         if(!struct_data.empty()) {
-                            return struct_data.dump();
+                            for(auto& [key, value] : struct_data.items()) {
+                                combined_data[key] = value;
+                            }
                         }
                     }
-                    // If it's a basic type, try to get its value
+                    // Try to get basic type value
                     else {
                         std::string val = from_expr(ns, "", deref_expr);
                         if(!val.empty() && val != "0" && val != "NULL") {
-                            return "\"" + val + "\"";
+                            found_valid_data = true;
+                            combined_data["value"] = val;
                         }
                     }
                 }
             }
+
+            if(found_valid_data) {
+                std::string result = combined_data.dump();
+                std::cout << "DEBUG: Captured value: " << result << "\n";
+                return result;
+            }
+
         } catch(const std::exception& e) {
             std::cout << "DEBUG: Dereference attempts failed: " << e.what() << "\n";
         }
 
-        // If all dereference attempts failed, try to interpret raw value
-        if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
-            return "null";
-        }
+        // If all attempts failed, return formatted raw value
         if(raw_val.find("invalid-object") != std::string::npos) {
             return "\"invalid-object\"";
         }
-        return "\"" + raw_val + "\"";
-    }
-
-    // Handle struct types directly
-    if(is_struct_type(expr->type)) {
-        const struct_type2t& struct_type = to_struct_type(expr->type);
-        json struct_data;
-        
-        for(size_t i = 0; i < struct_type.members.size(); i++) {
-            const irep_idt& member_name = struct_type.member_names[i];
-            const type2tc& member_type = struct_type.members[i];
-            
-            try {
-                expr2tc member_expr = expr2tc(std::make_shared<member2t>(
-                    member_type, expr, member_name));
-
-                // Try to get direct value first
-                std::string member_val;
-                if(is_constant_string2t(member_expr)) {
-                    const constant_string2t& str = to_constant_string2t(member_expr);
-                    member_val = str.value.as_string();
-                }
-                else if(is_constant_int2t(member_expr)) {
-                    const constant_int2t& c = to_constant_int2t(member_expr);
-                    member_val = integer2string(c.value);
-                }
-                else {
-                    // Recursively get member value
-                    member_val = get_struct_values(ns, member_expr);
-                }
-
-                struct_data[id2string(member_name)] = member_val;
-            } catch(const std::exception& e) {
-                std::cout << "Error accessing struct member: " << e.what() << "\n";
-                struct_data[id2string(member_name)] = "<error>";
-            }
+        if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
+            return "null";
         }
-        
-        return struct_data.dump();
+        return "\"" + raw_val + "\"";
     }
 
     // Handle basic types
