@@ -804,32 +804,72 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
     return headers;
 }
 
-void dump_type_details(const type2tc& type, int depth = 0) {
+void dump_expr_recursive(const expr2tc& expr, int depth = 0) {
     std::string indent(depth * 2, ' ');
-    
-    if(is_pointer_type(type)) {
-        const pointer_type2t& ptr = to_pointer_type(type);
-        std::cout << indent << "* ";  // Show pointer with *
-        dump_type_details(ptr.subtype, 0);  // Don't indent pointer types
+    auto print_fn = [depth](const char* fmt, ...) {
+        std::string indent(depth * 2, ' ');
+        va_list args;
+        va_start(args, fmt);
+        std::cout << indent;
+        vprintf(fmt, args);
+        va_end(args);
+    };
+
+    if(is_nil_expr(expr)) {
+        std::cout << indent << "<nil>\n";
+        return;
     }
-    else if(is_struct_type(type)) {
-        const struct_type2t& s = to_struct_type(type);
-        std::cout << indent << "struct {\n";
-        for(size_t i = 0; i < s.members.size(); i++) {
-            std::cout << indent << "  " << id2string(s.member_names[i]) << ": ";
-            dump_type_details(s.members[i], depth + 1);
-            std::cout << ";\n";
+
+    // Dump the main expr2t structure
+    std::cout << indent << "expr2tc at " << expr.get() << " {\n";
+    __builtin_dump_struct(expr.get(), print_fn);
+
+    // If it has a type, recursively dump that
+    if(!is_nil_type(expr->type)) {
+        std::cout << indent << "  type details {\n";
+        __builtin_dump_struct(expr->type.get(), print_fn);
+        
+        // For pointer types, follow the subtype
+        if(is_pointer_type(expr->type)) {
+            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+            std::cout << indent << "    pointed to type {\n";
+            __builtin_dump_struct(ptr_type.subtype.get(), print_fn);
+            std::cout << indent << "    }\n";
         }
-        std::cout << indent << "}";
+        // For struct types, dump all member types
+        else if(is_struct_type(expr->type)) {
+            const struct_type2t& struct_type = to_struct_type(expr->type);
+            std::cout << indent << "    member types {\n";
+            for(size_t i = 0; i < struct_type.members.size(); i++) {
+                std::cout << indent << "      member " << i << " (" 
+                         << id2string(struct_type.member_names[i]) << ") {\n";
+                __builtin_dump_struct(struct_type.members[i].get(), print_fn);
+                std::cout << indent << "      }\n";
+            }
+            std::cout << indent << "    }\n";
+        }
+        std::cout << indent << "  }\n";
     }
-    else if(is_array_type(type)) {
-        const array_type2t& arr = to_array_type(type);
-        dump_type_details(arr.subtype, 0);
-        std::cout << "[]";
+
+    // If it's a symbol, dump the symbol details
+    if(is_symbol2t(expr)) {
+        const symbol2t& sym = to_symbol2t(expr);
+        std::cout << indent << "  symbol details {\n";
+        std::cout << indent << "    name: " << sym.thename << "\n";
+        std::cout << indent << "  }\n";
     }
-    else {
-        std::cout << get_type_id(type);
+    
+    // If it's a constant, dump the constant value
+    if(is_constant_int2t(expr)) {
+        const constant_int2t& c = to_constant_int2t(expr);
+        std::cout << indent << "  constant value: " << c.value << "\n";
     }
+    else if(is_constant_string2t(expr)) {
+        const constant_string2t& c = to_constant_string2t(expr);
+        std::cout << indent << "  constant value: \"" << c.value << "\"\n";
+    }
+
+    std::cout << indent << "}\n";
 }
 
 void print_expr_info(const std::string& context, const expr2tc& expr, const namespacet& ns) {
@@ -840,78 +880,22 @@ void print_expr_info(const std::string& context, const expr2tc& expr, const name
         return;
     }
 
-    // Basic type info with more detailed structure
-    std::cout << "  Type: ";
-    dump_type_details(expr->type);
-    std::cout << "\n";
-    
-    // Show expression ID and raw pointer value
+    // Basic info
     std::cout << "  Expression ID: " << get_expr_id(expr) << "\n";
     std::cout << "  Raw pointer: " << expr.get() << "\n";
-    
-    // Value with more context
-    std::cout << "  Value: ";
-    if(is_constant_int2t(expr)) {
-        const constant_int2t& int_val = to_constant_int2t(expr);
-        std::cout << int_val.value << " (constant int)";
-    }
-    else if(is_constant_string2t(expr)) {
-        std::cout << "\"" << to_constant_string2t(expr).value << "\" (constant string)";
-    }
-    else if(is_symbol2t(expr)) {
-        const symbol2t& sym = to_symbol2t(expr);
-        std::cout << sym.thename;
-        
-        if(is_pointer_type(sym.type)) {
-            const pointer_type2t& ptr = to_pointer_type(sym.type);
-            if(is_struct_type(ptr.subtype)) {
-                const struct_type2t& s = to_struct_type(ptr.subtype);
-                std::cout << "\n  Struct pointer details:";
-                std::cout << "\n    Number of fields: " << s.members.size();
-                for(size_t i = 0; i < s.members.size(); i++) {
-                    std::cout << "\n    Field " << i << ":";
-                    std::cout << "\n      Name: " << id2string(s.member_names[i]);
-                    std::cout << "\n      Type: ";
-                    dump_type_details(s.members[i]);
-                }
-            }
-        }
-    }
-    else {
-        std::string val = from_expr(ns, "", expr);
-        std::cout << val << " (expr value)";
-    }
-    std::cout << "\n";
+    std::cout << "  Value: " << from_expr(ns, "", expr) << "\n";
 
-    // Enhanced struct/pointer information
+    // Dump complete recursive structure
+    std::cout << "  Complete structure dump:\n";
+    dump_expr_recursive(expr);
+
+    // Try to dereference if it's a pointer
     if(is_pointer_type(expr->type)) {
         try {
             expr2tc deref = dereference2tc(expr->type, expr);
             if(!is_nil_expr(deref)) {
                 std::cout << "  Dereferenced value details:\n";
-                std::cout << "    Type: ";
-                dump_type_details(deref->type);
-                std::cout << "\n";
-                
-                if(is_struct_type(deref->type)) {
-                    const struct_type2t& s = to_struct_type(deref->type);
-                    std::cout << "    Struct fields:\n";
-                    for(size_t i = 0; i < s.members.size(); i++) {
-                        std::cout << "      " << id2string(s.member_names[i]) << ":\n";
-                        std::cout << "        Type: ";
-                        dump_type_details(s.members[i]);
-                        std::cout << "\n";
-                        
-                        expr2tc field = member2tc(s.members[i], deref, s.member_names[i]);
-                        std::cout << "        Value: ";
-                        if(!is_nil_expr(field)) {
-                            std::cout << from_expr(ns, "", field);
-                        } else {
-                            std::cout << "<nil>";
-                        }
-                        std::cout << "\n";
-                    }
-                }
+                dump_expr_recursive(deref, 2);
             }
         } catch(const std::exception& e) {
             std::cout << "  Failed to dereference: " << e.what() << "\n";
@@ -919,17 +903,6 @@ void print_expr_info(const std::string& context, const expr2tc& expr, const name
             std::cout << "  Failed to dereference (unknown error)\n";
         }
     }
-
-    // Dump raw structure for debugging
-    std::cout << "  Raw structure dump:\n";
-    auto print_fn = [](const char* fmt, ...) {
-        va_list args;
-        va_start(args, fmt);
-        std::cout << "    ";
-        vprintf(fmt, args);
-        va_end(args);
-    };
-    __builtin_dump_struct(expr.get(), print_fn);
 }
 
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr, int depth = 0) {
