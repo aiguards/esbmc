@@ -1369,11 +1369,31 @@ void inspect_via_type_system(const expr2tc& expr, const namespacet& ns) {
             for(size_t i = 0; i < struct_type.members.size(); i++) {
                 std::cout << "  Member " << i << ": " << id2string(struct_type.member_names[i]) << "\n";
                 std::cout << "  Type: " << get_type_id(struct_type.members[i]) << "\n";
+                
+                // Try to get member value if this is DeviceRecord
+                if(struct_type.members.size() == 6) { // DeviceRecord check
+                    try {
+                        expr2tc member = member2tc(struct_type.members[i], expr, struct_type.member_names[i]);
+                        std::cout << "  Value: " << from_expr(ns, "", member) << "\n";
+                    } catch(...) {
+                        std::cout << "  Unable to get value\n";
+                    }
+                }
             }
         }
         else if(is_pointer_type(current_type)) {
             const pointer_type2t& ptr_type = to_pointer_type(current_type);
             std::cout << "Pointer to: " << get_type_id(ptr_type.subtype) << "\n";
+            
+            // Try to dereference and inspect content
+            try {
+                expr2tc deref = dereference2tc(current_type, expr);
+                if(!is_nil_expr(deref)) {
+                    std::cout << "Dereferenced content:\n";
+                    dump_expr_details(deref, ns, 1);
+                }
+            } catch(...) {}
+            
             current_type = ptr_type.subtype;
             continue;
         }
@@ -1393,21 +1413,26 @@ void inspect_via_deref(const expr2tc& expr, const namespacet& ns) {
             
             if(is_struct_type(deref->type)) {
                 const struct_type2t& struct_type = to_struct_type(deref->type);
-                std::cout << "Struct members:\n";
-                for(size_t i = 0; i < struct_type.members.size(); i++) {
-                    try {
-                        expr2tc member = member2tc(struct_type.members[i], deref, struct_type.member_names[i]);
-                        std::cout << "  " << id2string(struct_type.member_names[i]) 
-                                 << " = " << from_expr(ns, "", member) << "\n";
-                        
-                        // For array members
-                        if(is_array_type(struct_type.members[i])) {
-                            try_dump_array(member, ns, 2);
+                if(struct_type.member_names.size() == 6) { // DeviceRecord check
+                    std::cout << "DeviceRecord contents:\n";
+                    for(size_t i = 0; i < struct_type.members.size(); i++) {
+                        try {
+                            expr2tc member = member2tc(struct_type.members[i], deref, struct_type.member_names[i]);
+                            const std::string member_name = id2string(struct_type.member_names[i]);
+                            std::string value = from_expr(ns, "", member);
+                            
+                            // Special handling for time_t if it's user_presence_exp
+                            if(member_name == "user_presence_exp") {
+                                if(is_constant_int2t(member)) {
+                                    value = from_expr(ns, "", member);  // This already handles BigInt properly
+                                }
+                            }
+                            
+                            std::cout << "  " << member_name << " = " << value << "\n";
+                        } catch(const std::exception& e) {
+                            std::cout << "  Failed to access " << id2string(struct_type.member_names[i]) 
+                                     << ": " << e.what() << "\n";
                         }
-                    } catch(const std::exception& e) {
-                        std::cout << "  Failed to access member " 
-                                 << id2string(struct_type.member_names[i]) 
-                                 << ": " << e.what() << "\n";
                     }
                 }
             }
