@@ -25,6 +25,8 @@
 #include <util/mp_arith.h>
 #include <memory>
 #include <irep2/irep2_type.h>
+#include <libdwarf/libdwarf.h>
+#include <libdwarf/dwarf.h>
 // #include <boost/pfr.hpp>
 // #include <boost/pfr/precise/core.hpp>
 
@@ -97,6 +99,135 @@
 //         }
 //     }
 // }
+
+struct PointerInspector {
+    Dwarf_Debug dbg;
+    Dwarf_Die cu_die;
+    
+    void inspect_memory(void* ptr, size_t size) {
+        // Map process memory
+        char path[256];
+        snprintf(path, sizeof(path), "/proc/self/mem");
+        int fd = open(path, O_RDONLY);
+        if(fd < 0) return;
+
+        void* mapped = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, (off_t)ptr);
+        if(mapped == MAP_FAILED) {
+            close(fd);
+            return;
+        }
+
+        // Get type info from DWARF
+        Dwarf_Die type_die;
+        Dwarf_Attribute type_attr;
+        if(dwarf_attr(cu_die, DW_AT_type, &type_attr, nullptr) == DW_DLV_OK) {
+            Dwarf_Off type_offset;
+            if(dwarf_global_formref(type_attr, &type_offset, nullptr) == DW_DLV_OK) {
+                if(dwarf_offdie(dbg, type_offset, &type_die, nullptr) == DW_DLV_OK) {
+                    print_type_contents(mapped, type_die);
+                }
+            }
+        }
+
+        munmap(mapped, size);
+        close(fd);
+    }
+
+    void print_type_contents(void* addr, Dwarf_Die type_die) {
+        Dwarf_Half tag;
+        if(dwarf_tag(type_die, &tag, nullptr) != DW_DLV_OK) return;
+
+        switch(tag) {
+            case DW_TAG_base_type:
+                print_base_type(addr, type_die);
+                break;
+            case DW_TAG_pointer_type:
+                print_pointer_type(addr, type_die);
+                break;
+            case DW_TAG_structure_type:
+                print_struct_type(addr, type_die);
+                break;
+            case DW_TAG_array_type:
+                print_array_type(addr, type_die);
+                break;
+        }
+    }
+
+    void print_struct_type(void* addr, Dwarf_Die struct_die) {
+        Dwarf_Die child;
+        if(dwarf_child(struct_die, &child, nullptr) == DW_DLV_OK) {
+            do {
+                Dwarf_Half tag;
+                if(dwarf_tag(child, &tag, nullptr) == DW_DLV_OK) {
+                    if(tag == DW_TAG_member) {
+                        Dwarf_Attribute offset_attr;
+                        if(dwarf_attr(child, DW_AT_data_member_location, 
+                                    &offset_attr, nullptr) == DW_DLV_OK) {
+                            Dwarf_Unsigned offset;
+                            if(dwarf_formudata(offset_attr, &offset, nullptr) == DW_DLV_OK) {
+                                char* name;
+                                if(dwarf_diename(child, &name, nullptr) == DW_DLV_OK) {
+                                    void* member_addr = (char*)addr + offset;
+                                    Dwarf_Die member_type;
+                                    if(get_type_die(child, &member_type)) {
+                                        std::cout << "Member " << name << ": ";
+                                        print_type_contents(member_addr, member_type);
+                                        std::cout << "\n";
+                                    }
+                                    dwarf_dealloc(dbg, name, DW_DLA_STRING);
+                                }
+                            }
+                        }
+                    }
+                }
+            } while(dwarf_siblingof(dbg, child, &child, nullptr) == DW_DLV_OK);
+        }
+    }
+
+    void print_pointer_type(void* addr, Dwarf_Die type_die) {
+        void* pointed_addr = *(void**)addr;
+        if(pointed_addr) {
+            Dwarf_Die target_type;
+            if(get_type_die(type_die, &target_type)) {
+                print_type_contents(pointed_addr, target_type);
+            }
+        } else {
+            std::cout << "NULL";
+        }
+    }
+
+    void print_array_type(void* addr, Dwarf_Die type_die) {
+        Dwarf_Die element_type;
+        if(get_type_die(type_die, &element_type)) {
+            Dwarf_Attribute size_attr;
+            if(dwarf_attr(type_die, DW_AT_count, &size_attr, nullptr) == DW_DLV_OK) {
+                Dwarf_Unsigned count;
+                if(dwarf_formudata(size_attr, &count, nullptr) == DW_DLV_OK) {
+                    Dwarf_Unsigned elem_size;
+                    if(dwarf_bytesize(element_type, &elem_size, nullptr) == DW_DLV_OK) {
+                        for(Dwarf_Unsigned i = 0; i < count; i++) {
+                            void* elem_addr = (char*)addr + (i * elem_size);
+                            print_type_contents(elem_addr, element_type);
+                            if(i < count - 1) std::cout << ", ";
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    bool get_type_die(Dwarf_Die die, Dwarf_Die* type_die) {
+        Dwarf_Attribute type_attr;
+        if(dwarf_attr(die, DW_AT_type, &type_attr, nullptr) == DW_DLV_OK) {
+            Dwarf_Off type_offset;
+            if(dwarf_global_formref(type_attr, &type_offset, nullptr) == DW_DLV_OK) {
+                return dwarf_offdie(dbg, type_offset, type_die, nullptr) == DW_DLV_OK;
+            }
+        }
+        return false;
+    }
+};
+
 
 using json = nlohmann::json;
 
@@ -978,6 +1109,31 @@ void print_expr_info(const std::string& context, const expr2tc& expr, const name
     }
 }
 
+// Usage with ESBMC:
+void inspect_device_memory(const expr2tc& expr, const namespacet& ns) {
+    if(is_pointer_type(expr->type)) {
+        try {
+            // Get actual memory address from expr
+            void* ptr_addr = nullptr;
+            if(is_symbol2t(expr)) {
+                const symbol2t& sym = to_symbol2t(expr);
+                // Get symbol's address from ESBMC's runtime
+                // This part depends on how ESBMC represents actual memory
+                ptr_addr = get_symbol_address(sym.thename);
+            }
+            
+            if(ptr_addr) {
+                PointerInspector inspector;
+                // Initialize DWARF debug info
+                // This would need proper initialization based on the binary
+                inspector.inspect_memory(ptr_addr, sizeof(void*));
+            }
+        } catch(const std::exception& e) {
+            std::cout << "Memory inspection failed: " << e.what() << "\n";
+        }
+    }
+}
+
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr, int depth = 0) {
     std::cout << "\nDEBUG Detailed type analysis ---------------\n";
     
@@ -1624,6 +1780,8 @@ void print_device_struct(const expr2tc& expr, const namespacet& ns) {
 void inspect_all_approaches(const expr2tc& expr, const namespacet& ns) {
     std::cout << "\n=== Trying all inspection approaches ===\n";
     print_device_struct(expr, ns);
+
+    inspect_device_memory(expr, ns);
 
     inspect_via_type_system(expr, ns);
     inspect_via_deref(expr, ns);
