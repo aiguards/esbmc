@@ -835,29 +835,27 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        // Check for interesting pointers that might be worth dumping
-        if(raw_val.find("dynamic_7_array") != std::string::npos ||
-           (raw_val.find("struct") != std::string::npos && 
-            raw_val.find("0") == std::string::npos && 
-            raw_val.find("invalid-object") == std::string::npos)) {
+        // Always try to dump the struct
+        try {
+            const expr2t* raw_ptr = expr.get();
+            std::cout << "DEBUG: Got pointer: " << raw_ptr << "\n";
             
-            try {
-                const expr2t* raw_ptr = expr.get();
-                if(raw_ptr) {
-                    std::cout << "DEBUG: About to dump struct at " << raw_ptr << "\n";
-                    auto print_fn = [](const char* fmt, ...) {
-                        va_list args;
-                        va_start(args, fmt);
-                        std::cout << "DEBUG struct dump: ";
-                        vprintf(fmt, args);
-                        va_end(args);
-                    };
-                    __builtin_dump_struct(raw_ptr, print_fn);
-                    std::cout << "DEBUG: Dump complete\n";
-                }
-            } catch(const std::exception& e) {
-                std::cout << "DEBUG: Exception during struct dump: " << e.what() << "\n";
-            }
+            auto print_fn = [](const char* fmt, ...) {
+                va_list args;
+                va_start(args, fmt);
+                std::cout << "DEBUG struct dump: ";
+                vprintf(fmt, args);
+                va_end(args);
+            };
+            
+            std::cout << "DEBUG: About to dump struct at " << raw_ptr << "\n";
+            __builtin_dump_struct(raw_ptr, print_fn);
+            std::cout << "DEBUG: Dump complete\n";
+            
+        } catch(const std::exception& e) {
+            std::cout << "DEBUG: Exception during struct dump: " << e.what() << "\n";
+        } catch(...) {
+            std::cout << "DEBUG: Unknown exception during struct dump\n";
         }
         
         if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
