@@ -804,10 +804,16 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
     return headers;
 }
 
-void print_expr_info(const std::string& context, const expr2tc& expr) {
+void print_expr_info(const std::string& context, const expr2tc& expr, const namespacet& ns) {
     std::cout << "\nDEBUG " << context << ":\n";
-    std::cout << "  - expr is_nil: " << is_nil_expr(expr) << "\n";
+    if(is_nil_expr(expr)) {
+        std::cout << "  - expr is_nil: 1\n";
+        return;
+    }
 
+    std::cout << "  - expr is_nil: " << is_nil_expr(expr) << "\n";
+    
+    // Dump the basic struct layout
     auto print_fn = [](const char* fmt, ...) {
         va_list args;
         va_start(args, fmt);
@@ -815,45 +821,61 @@ void print_expr_info(const std::string& context, const expr2tc& expr) {
         vprintf(fmt, args);
         va_end(args);
     };
-
+    
     const expr2t* expr_ptr = expr.get();
     if(expr_ptr) {
         std::cout << "DEBUG: About to dump expr at " << expr_ptr << "\n";
         __builtin_dump_struct(expr_ptr, print_fn);
         
-        // Try to get the underlying device record
-        if(is_pointer_type(expr->type)) {
-            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-            if(is_struct_type(ptr_type.subtype)) {
-                const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
-                
-                // Print member info and attempt to access device fields
+        // Try to get actual symbol info when it's a symbol
+        if(is_symbol2t(expr)) {
+            const symbol2t &sym = to_symbol2t(expr);
+            std::cout << "DEBUG: Symbol analysis:\n";
+            std::cout << "  - Symbol name: " << sym.thename << "\n";
+            std::cout << "  - Symbol type: " << get_type_id(sym.type) << "\n";
+            
+            // For struct types (like DeviceRecord), dump fields
+            if(is_struct_type(sym.type)) {
+                const struct_type2t &struct_type = to_struct_type(sym.type);
+                std::cout << "  - DeviceRecord fields:\n";
                 for(size_t i = 0; i < struct_type.members.size(); i++) {
-                    const irep_idt& member_name = struct_type.member_names[i];
-                    std::cout << "DEBUG: Member " << i << " (" << member_name << "):" << "\n";
-
+                    std::cout << "    Field " << i << ":\n";
+                    std::cout << "      Name: " << id2string(struct_type.member_names[i]) << "\n";
+                    std::cout << "      Type: " << get_type_id(struct_type.members[i]) << "\n";
+                    
+                    // Try to get field value through member2tc
                     try {
-                        // Create member access expression
                         expr2tc member_expr = member2tc(
                             struct_type.members[i],
                             expr,
-                            member_name);
-
-                        // Dump the member structure
+                            struct_type.member_names[i]);
+                            
+                        std::cout << "      Raw value: " << from_expr(ns, "", member_expr) << "\n";
+                        std::cout << "      Value dump:\n";
                         if(const expr2t* member_ptr = member_expr.get()) {
-                            std::cout << "  DEBUG: Member value dump at " << member_ptr << ":\n";
                             __builtin_dump_struct(member_ptr, print_fn);
-
-                            // If this member is itself a struct or pointer, recurse
-                            if(is_struct_type(member_expr->type) || is_pointer_type(member_expr->type)) {
-                                std::cout << "  DEBUG: Recursing into member:\n";
-                                print_expr_info("  " + id2string(member_name), member_expr);
-                            }
                         }
-                    } catch(const std::exception& e) {
-                        std::cout << "  DEBUG: Error accessing member " << member_name << ": " << e.what() << "\n";
+                    }
+                    catch(const std::exception& e) {
+                        std::cout << "      Failed to get value: " << e.what() << "\n";
                     }
                 }
+            }
+        }
+    }
+    
+    // Additional pointer analysis
+    if(is_pointer_type(expr->type)) {
+        std::cout << "DEBUG: Pointer analysis:\n";
+        std::string raw_val = from_expr(ns, "", expr); 
+        std::cout << "Raw pointer value: " << raw_val << "\n";
+
+        const pointer_type2t& ptr = to_pointer_type(expr->type);
+        if(is_struct_type(ptr.subtype)) {
+            const struct_type2t& s = to_struct_type(ptr.subtype);
+            std::cout << "  - struct fields: " << s.members.size() << "\n";
+            for(size_t i = 0; i < s.members.size(); i++) {
+                std::cout << "    - " << id2string(s.member_names[i]) << "\n";
             }
         }
     }
@@ -912,7 +934,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, int dep
                         
                         // Log the expression we created
                         std::cout << "    Created member expression\n";
-                        print_expr_info("member_expr", member_expr);
+                        print_expr_info("member_expr", member_expr, ns);
                         
                         // Recursively analyze this member
                         struct_data[id2string(member_name)] = get_struct_values(ns, member_expr, depth + 1);
@@ -968,7 +990,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, int dep
                 
                 try {
                     expr2tc member_expr = member2tc(member_type, expr, member_name);
-                    print_expr_info("member_expr", member_expr);
+                    print_expr_info("member_expr", member_expr, ns);
                     struct_data[id2string(member_name)] = get_struct_values(ns, member_expr, depth + 1);
                 } catch(const std::exception& e) {
                     std::cout << "  Error accessing member: " << e.what() << "\n";
@@ -1092,8 +1114,8 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
                             processed_vars.insert(var_name);
                             
                             std::cout << "\nDEBUG Processing initial value for: " << var_name << "\n";
-                            print_expr_info("step.lhs", step.lhs);
-                            print_expr_info("step.value", step.value);
+                            print_expr_info("step.lhs", step.lhs, ns);
+                            print_expr_info("step.value", step.value, ns);
                             
                             try {
                                 // Get all values recursively
