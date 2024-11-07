@@ -1047,6 +1047,58 @@ std::string get_assignment_message(const namespacet& ns,
     return msg;
 }
 
+void inspect_steps(const goto_tracet &trace, const namespacet &ns) {
+    std::cout << "\nDEBUG Step inspection:\n";
+    
+    for(const auto &step : trace.steps) {
+        if(step.is_assignment()) {
+            std::cout << "\nDEBUG Assignment step:\n";
+            
+            // Look at the LHS expression
+            if(!is_nil_expr(step.lhs)) {
+                std::cout << "LHS details:\n";
+                if(is_symbol2t(step.lhs)) {
+                    const symbol2t &sym = to_symbol2t(step.lhs);
+                    std::cout << "  Symbol name: " << sym.thename << "\n";
+                    std::cout << "  Type ID: " << get_type_id(sym.type) << "\n";
+                    
+                    // If it's a struct type, examine fields
+                    if(is_struct_type(sym.type)) {
+                        const struct_type2t &s = to_struct_type(sym.type);
+                        std::cout << "  Struct fields:\n";
+                        for(size_t i = 0; i < s.members.size(); i++) {
+                            std::cout << "    - " << id2string(s.member_names[i]) << "\n";
+                            try {
+                                expr2tc member_expr = member2tc(s.members[i], step.lhs, s.member_names[i]);
+                                std::cout << "      Value: " << from_expr(ns, "", member_expr) << "\n";
+                            } catch(...) {
+                                std::cout << "      Error getting value\n";
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Look at the assigned value
+            if(!is_nil_expr(step.value)) {
+                std::cout << "Value details:\n";
+                // Try to get any actual values
+                if(is_constant_string2t(step.value)) {
+                    const constant_string2t &str = to_constant_string2t(step.value);
+                    std::cout << "  String value: " << str.value << "\n";
+                }
+                else if(is_constant_int2t(step.value)) {
+                    const constant_int2t &num = to_constant_int2t(step.value);
+                    std::cout << "  Int value: " << num.value << "\n";
+                }
+            }
+
+            // Print program location
+            std::cout << "Location: " << step.pc->location << "\n\n";
+        }
+    }
+}
+
 void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
     std::cout << "\nDEBUG Tracking variable states:\n";
     
@@ -1117,7 +1169,7 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
     bool found_violation = false;
 
     track_variable_state(goto_trace, ns);
-
+    inspect_steps(goto_trace, ns);
 
     // First pass - collect referenced files
     for(const auto &step : goto_trace.steps) {
