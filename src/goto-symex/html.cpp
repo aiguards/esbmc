@@ -1060,63 +1060,77 @@ void inspect_steps(const goto_tracet &trace, const namespacet &ns) {
                 if(is_symbol2t(step.lhs)) {
                     const symbol2t &sym = to_symbol2t(step.lhs);
                     std::cout << "  Symbol name: " << sym.thename << "\n";
-                    std::cout << "  Type ID: " << get_type_id(sym.type) << "\n";
+                    std::cout << "  Raw symbol value: " << from_expr(ns, "", step.lhs) << "\n";
                     
-                    // Handle pointer types 
+                    // Detailed type inspection
+                    std::cout << "  Type details:\n";
                     if(is_pointer_type(sym.type)) {
                         const pointer_type2t &ptr_type = to_pointer_type(sym.type);
-                        std::cout << "  Pointer details:\n";
-                        std::cout << "    Points to type: " << get_type_id(ptr_type.subtype) << "\n";
+                        std::cout << "    - Is pointer type\n";
+                        std::cout << "    - Subtype ID: " << get_type_id(ptr_type.subtype) << "\n";
                         
-                        // If it points to a struct, examine the struct type
-                        if(is_struct_type(ptr_type.subtype)) {
-                            const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
-                            std::cout << "    Struct fields:\n";
-                            for(size_t i = 0; i < struct_type.members.size(); i++) {
-                                std::cout << "      Field " << i << ": " << id2string(struct_type.member_names[i]) << "\n";
-                                std::cout << "        Type: " << get_type_id(struct_type.members[i]) << "\n";
-                                
-                                try {
-                                    // Create a dereference expression
-                                    expr2tc deref_expr = dereference2tc(ptr_type.subtype, step.lhs);
-                                    
-                                    // Then try to access the member
-                                    expr2tc member_expr = member2tc(
-                                        struct_type.members[i],
-                                        deref_expr,
-                                        struct_type.member_names[i]);
-                                        
-                                    std::cout << "        Value: " << from_expr(ns, "", member_expr) << "\n";
-                                } catch(const std::exception& e) {
-                                    std::cout << "        Error getting value: " << e.what() << "\n";
-                                }
+                        // Try to get more subtype info
+                        if(is_symbol_type(ptr_type.subtype)) {
+                            std::cout << "    - Symbol type details:\n";
+                            const symbol_type2t &sym_type = to_symbol_type(ptr_type.subtype);
+                            std::cout << "      Symbol: " << sym_type.symbol_name << "\n";
+                        }
+                        
+                        // Dump the type structure
+                        auto print_fn = [](const char* fmt, ...) {
+                            va_list args;
+                            va_start(args, fmt);
+                            std::cout << "    DEBUG type dump: ";
+                            vprintf(fmt, args);
+                            va_end(args);
+                        };
+                        
+                        std::cout << "    Raw type dump:\n";
+                        __builtin_dump_struct(&ptr_type, print_fn);
+                        
+                        // Try to dump what it points to
+                        if(!is_nil_expr(step.value)) {
+                            std::cout << "    Points to dump:\n"; 
+                            const expr2t* value_ptr = step.value.get();
+                            if(value_ptr) {
+                                __builtin_dump_struct(value_ptr, print_fn);
                             }
                         }
+                    }
+                    
+                    // Raw expr dump
+                    std::cout << "  Raw expr dump:\n";
+                    auto expr_print = [](const char* fmt, ...) {
+                        va_list args;
+                        va_start(args, fmt);
+                        std::cout << "    DEBUG expr dump: ";
+                        vprintf(fmt, args);
+                        va_end(args);
+                    };
+                    const expr2t* expr_ptr = step.lhs.get();
+                    if(expr_ptr) {
+                        __builtin_dump_struct(expr_ptr, expr_print);
                     }
                 }
             }
             
-            // Look at the assigned value
+            // Look at the raw values
             if(!is_nil_expr(step.value)) {
                 std::cout << "Value details:\n";
-                // Check if it's a pointer dereference
-                if(is_dereference2t(step.value)) {
-                    std::cout << "  Dereferenced pointer value\n";
-                    const dereference2t &deref = to_dereference2t(step.value);
-                    try {
-                        std::cout << "  Value: " << from_expr(ns, "", deref.value) << "\n";
-                    } catch(...) {
-                        std::cout << "  Error getting dereferenced value\n";
-                    }
-                }
-                // Handle other value types
-                else if(is_constant_string2t(step.value)) {
-                    const constant_string2t &str = to_constant_string2t(step.value);
-                    std::cout << "  String value: " << str.value << "\n";
-                }
-                else if(is_constant_int2t(step.value)) {
-                    const constant_int2t &num = to_constant_int2t(step.value);
-                    std::cout << "  Int value: " << num.value << "\n";
+                std::cout << "  Raw value: " << from_expr(ns, "", step.value) << "\n";
+                
+                // Try to dump the value structure
+                auto val_print = [](const char* fmt, ...) {
+                    va_list args;
+                    va_start(args, fmt);
+                    std::cout << "  DEBUG value dump: ";
+                    vprintf(fmt, args);
+                    va_end(args);
+                };
+                
+                const expr2t* value_ptr = step.value.get();
+                if(value_ptr) {
+                    __builtin_dump_struct(value_ptr, val_print);
                 }
             }
 
