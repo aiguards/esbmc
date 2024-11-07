@@ -808,50 +808,54 @@ void print_expr_info(const std::string& context, const expr2tc& expr) {
     std::cout << "\nDEBUG " << context << ":\n";
     std::cout << "  - expr is_nil: " << is_nil_expr(expr) << "\n";
 
-    // Helper lambda for recursive struct dumping
-    std::function<void(const expr2t*, const std::string&, int)> dump_recursive = 
-        [&dump_recursive](const expr2t* ptr, const std::string& prefix, int depth) {
-            if (!ptr || depth > 10) return; // Prevent infinite recursion
-            
-            std::cout << std::string(depth * 2, ' ') << prefix << " at " << ptr << "\n";
-            
-            auto print_fn = [depth](const char* fmt, ...) {
-                va_list args;
-                va_start(args, fmt);
-                std::cout << std::string(depth * 2, ' ') << "DEBUG struct dump: ";
-                vprintf(fmt, args);
-                va_end(args);
-            };
-
-            __builtin_dump_struct(ptr, print_fn);
-            
-            // Try to dump the type
-            if (ptr->type) {
-                const type2t* type_ptr = ptr->type.get();
-                __builtin_dump_struct(type_ptr, print_fn);
-                
-                // Handle different expression types
-                if (is_struct_type(ptr->type)) {
-                    const struct_type2t& s = to_struct_type(ptr->type);
-                    for (size_t i = 0; i < s.members.size(); i++) {
-                        if (const expr2t* member = dynamic_cast<const expr2t*>(s.members[i].get())) {
-                            dump_recursive(member, 
-                                "member " + id2string(s.member_names[i]), depth + 1);
-                        }
-                    }
-                }
-                else if (is_pointer_type(ptr->type)) {
-                    const pointer_type2t& ptr_type = to_pointer_type(ptr->type);
-                    if (const expr2t* subtype = dynamic_cast<const expr2t*>(ptr_type.subtype.get())) {
-                        dump_recursive(subtype, "pointed_type", depth + 1);
-                    }
-                }
-            }
+    auto print_fn = [](const char* fmt, ...) {
+        va_list args;
+        va_start(args, fmt);
+        std::cout << "DEBUG struct dump: ";
+        vprintf(fmt, args);
+        va_end(args);
     };
 
     const expr2t* expr_ptr = expr.get();
     if(expr_ptr) {
-        dump_recursive(expr_ptr, "root", 0);
+        std::cout << "DEBUG: About to dump expr at " << expr_ptr << "\n";
+        __builtin_dump_struct(expr_ptr, print_fn);
+        
+        // Try to get the underlying device record
+        if(is_pointer_type(expr->type)) {
+            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+            if(is_struct_type(ptr_type.subtype)) {
+                const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
+                
+                // Print member info and attempt to access device fields
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    const irep_idt& member_name = struct_type.member_names[i];
+                    std::cout << "DEBUG: Member " << i << " (" << member_name << "):" << "\n";
+
+                    try {
+                        // Create member access expression
+                        expr2tc member_expr = member2tc(
+                            struct_type.members[i],
+                            expr,
+                            member_name);
+
+                        // Dump the member structure
+                        if(const expr2t* member_ptr = member_expr.get()) {
+                            std::cout << "  DEBUG: Member value dump at " << member_ptr << ":\n";
+                            __builtin_dump_struct(member_ptr, print_fn);
+
+                            // If this member is itself a struct or pointer, recurse
+                            if(is_struct_type(member_expr->type) || is_pointer_type(member_expr->type)) {
+                                std::cout << "  DEBUG: Recursing into member:\n";
+                                print_expr_info("  " + id2string(member_name), member_expr);
+                            }
+                        }
+                    } catch(const std::exception& e) {
+                        std::cout << "  DEBUG: Error accessing member " << member_name << ": " << e.what() << "\n";
+                    }
+                }
+            }
+        }
     }
 }
 
