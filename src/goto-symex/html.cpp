@@ -824,102 +824,143 @@ void print_expr_info(const std::string& context, const expr2tc& expr) {
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
     print_expr_info("get_struct_values input", expr);
     
-    std::string result;
     if(is_nil_expr(expr)) {
         std::cout << "DEBUG: Expr is nil\n";
         return "NULL";
     }
 
-    type2tc actual_type;
-    expr2tc actual_expr = expr;
-    
+    // If it's a pointer, try to get the actual value it points to
     if(is_pointer_type(expr->type)) {
         std::cout << "DEBUG: Found pointer type\n";
-        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-        actual_type = ptr_type.subtype;
-        try {
-            actual_expr = expr2tc(std::make_shared<dereference2t>(actual_type, expr));
-            std::cout << "DEBUG: Successfully dereferenced pointer\n";
-        } catch(const std::exception& e) {
-            std::cout << "DEBUG: Failed to dereference: " << e.what() << "\n";
-            return "<dereference-error>";
+        
+        // Check if it's a constant expression
+        if(is_constant_expr(expr)) {
+            // Try to get the pointer value directly
+            std::string ptr_val = from_expr(ns, "", expr);
+            if(ptr_val == "NULL" || ptr_val == "0") {
+                return "NULL";
+            }
         }
-    } else {
-        actual_type = expr->type;
+        
+        // Try to get the value pointed to
+        try {
+            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+            expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
+            
+            // If successfully dereferenced, process the value
+            if(!is_nil_expr(deref_expr)) {
+                if(is_struct_type(deref_expr->type)) {
+                    return get_struct_values(ns, deref_expr);
+                } else {
+                    std::string val = from_expr(ns, "", deref_expr);
+                    if(val.empty() || val == "NULL") {
+                        return "0";
+                    }
+                    return val;
+                }
+            }
+        } catch(const std::exception& e) {
+            std::cout << "DEBUG: Dereference failed: " << e.what() << "\n";
+            return "<invalid-pointer>";
+        }
+        
+        // If we couldn't dereference, return the pointer value itself
+        return from_expr(ns, "", expr);
     }
 
-    print_expr_info("after dereference", actual_expr);
-
-    if(is_struct_type(actual_type)) {
+    // Handle struct types
+    if(is_struct_type(expr->type)) {
         std::cout << "DEBUG: Processing struct type\n";
-        const struct_type2t& struct_type = to_struct_type(actual_type);
-        result += "{";
-        bool first = true;
-
+        const struct_type2t& struct_type = to_struct_type(expr->type);
+        
+        json struct_json = json::object();
+        
         for(size_t i = 0; i < struct_type.members.size(); i++) {
-            if(!first) result += ", ";
-            first = false;
-            
             const irep_idt& member_name = struct_type.member_names[i];
             const type2tc& member_type = struct_type.members[i];
             
             std::cout << "DEBUG: Processing member " << id2string(member_name) << "\n";
             
-            result += id2string(member_name) + ": ";
-            
             try {
                 expr2tc member_expr = expr2tc(std::make_shared<member2t>(
                     member_type,
-                    actual_expr,
+                    expr,
                     member_name));
 
                 print_expr_info("member " + id2string(member_name), member_expr);
                 
                 if(is_nil_expr(member_expr)) {
-                    std::cout << "DEBUG: Member expr is nil\n";
-                    result += "NULL";
+                    struct_json[id2string(member_name)] = nullptr;
                     continue;
                 }
 
+                // Handle member types
                 if(is_struct_type(member_type)) {
-                    result += get_struct_values(ns, member_expr);
+                    struct_json[id2string(member_name)] = json::parse(get_struct_values(ns, member_expr));
+                }
+                else if(is_pointer_type(member_type)) {
+                    struct_json[id2string(member_name)] = get_struct_values(ns, member_expr);
                 }
                 else if(is_array_type(member_type)) {
-                    std::cout << "DEBUG: Array member\n";
                     std::string array_val = from_expr(ns, "", member_expr);
-                    std::cout << "DEBUG: Array value: " << array_val << "\n";
-                    result += "\"" + array_val + "\"";
+                    struct_json[id2string(member_name)] = array_val;
                 }
                 else {
                     if(is_constant_int2t(member_expr)) {
                         const constant_int2t& c = to_constant_int2t(member_expr);
-                        std::cout << "DEBUG: Int value: " << c.value << "\n";
-                        result += integer2string(c.value);
+                        // Convert BigInt to string first
+                        struct_json[id2string(member_name)] = integer2string(c.value);
                     }
                     else if(is_constant_bool2t(member_expr)) {
                         const constant_bool2t& c = to_constant_bool2t(member_expr);
-                        result += c.value ? "true" : "false";
+                        struct_json[id2string(member_name)] = c.value;
                     }
                     else {
                         std::string val = from_expr(ns, "", member_expr);
-                        std::cout << "DEBUG: Other value: " << val << "\n";
-                        result += val;
+                        if(val.empty()) {
+                            struct_json[id2string(member_name)] = nullptr;
+                        } else {
+                            // Try to parse as number if possible
+                            try {
+                                size_t pos;
+                                long long num = std::stoll(val, &pos);
+                                if(pos == val.length()) {
+                                    struct_json[id2string(member_name)] = num;
+                                } else {
+                                    struct_json[id2string(member_name)] = val;
+                                }
+                            } catch(...) {
+                                struct_json[id2string(member_name)] = val;
+                            }
+                        }
                     }
                 }
             }
             catch(const std::exception& e) {
                 std::cout << "DEBUG: Member access error: " << e.what() << "\n";
-                result += "<error>";
-                continue;
+                struct_json[id2string(member_name)] = "<error>";
             }
         }
-        result += "}";
-        return result;
+        
+        return struct_json.dump();
     }
     
-    std::string final_val = from_expr(ns, "", expr);
-    std::cout << "DEBUG: Final non-struct value: " << final_val << "\n";
-    return final_val;
+    // Handle basic types
+    std::string val = from_expr(ns, "", expr);
+    if(val.empty()) {
+        return "NULL";
+    }
+    
+    // Try to parse as number if possible
+    try {
+        size_t pos;
+        long long num = std::stoll(val, &pos);
+        if(pos == val.length()) {
+            return std::to_string(num);
+        }
+    } catch(...) {}
+    
+    return val;
 }
 
 std::string get_assignment_message(const namespacet& ns, 
