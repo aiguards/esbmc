@@ -888,10 +888,11 @@ std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr,
     std::cout << "\nDEBUG: === Pointer Analysis Start ===" << std::endl;
     
     try {
+        // Get pointer type information
         const pointer_type2t& ptr_type = to_pointer_type(expr->type);
         std::cout << "DEBUG: Pointed-to type ID: " << type_id_to_string(ptr_type.subtype->type_id) << std::endl;
         
-        // Get both original and dereferenced expressions
+        // Get original expression
         std::string orig_expr = from_expr(ns, "", expr);
         std::cout << "DEBUG: Original expression: " << orig_expr << std::endl;
         
@@ -899,60 +900,60 @@ std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr,
             const symbol2t& sym = to_symbol2t(expr);
             std::cout << "DEBUG: Symbol name: " << sym.thename << std::endl;
             
-            // Try to look up the symbol type
-            const symbolt* orig_sym = ns.lookup(sym.thename);
-            if(orig_sym) {
+            // Try to look up symbol
+            const symbolt* symbol = ns.lookup(sym.thename);
+            if(symbol) {
                 std::cout << "DEBUG: Found original symbol" << std::endl;
-                std::cout << "DEBUG: Original type: " << from_type(ns, "", orig_sym->type) << std::endl;
-            } else {
-                std::cout << "DEBUG: Could not find original symbol" << std::endl;
+                std::cout << "DEBUG: Symbol type: " << from_type(ns, "", symbol->type) << std::endl;
+                
+                // Check for failed symbol
+                const irep_idt& failed = symbol->type.failed_symbol();
+                if(!failed.empty()) {
+                    std::cout << "DEBUG: Failed symbol: " << failed << std::endl;
+                }
             }
         }
         
-        // Try to dereference
+        // Try direct dereference
         try {
-            std::cout << "DEBUG: Attempting dereference..." << std::endl;
             expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
-            
             if(!is_nil_expr(deref_expr)) {
                 std::cout << "DEBUG: Dereference successful" << std::endl;
                 std::cout << "DEBUG: Dereferenced type ID: " << type_id_to_string(deref_expr->type->type_id) << std::endl;
-                std::string deref_value = from_expr(ns, "", deref_expr);
-                std::cout << "DEBUG: Dereferenced value: " << deref_value << std::endl;
                 
-                // If it's a struct type after dereferencing
+                // If pointer to struct
                 if(is_struct_type(deref_expr->type)) {
+                    std::cout << "DEBUG: Found struct type after dereference" << std::endl;
                     const struct_type2t& struct_type = to_struct_type(deref_expr->type);
-                    std::cout << "DEBUG: Found struct with " << struct_type.members.size() << " members" << std::endl;
+                    std::cout << "DEBUG: Struct name: " << struct_type.name << std::endl;
                     
-                    // Print member info
-                    for(size_t i = 0; i < struct_type.members.size(); i++) {
-                        std::cout << "DEBUG: Member " << i << ": " 
-                                 << id2string(struct_type.member_names[i])
-                                 << " (type: " << type_id_to_string(struct_type.members[i]->type_id) << ")" << std::endl;
+                    // Check if we can process struct
+                    if(!seen_addresses.insert(orig_expr).second) {
+                        std::cout << "DEBUG: Circular reference detected" << std::endl;
+                        return fmt::format("<circular-ref:{}>", orig_expr);
                     }
                     
                     return get_struct_values(ns, deref_expr, seen_addresses, depth + 1);
                 }
                 
                 // For non-struct types
-                return fmt::format("*({}) -> {}", orig_expr, deref_value);
+                std::string value = from_expr(ns, "", deref_expr);
+                std::cout << "DEBUG: Dereferenced value: " << value << std::endl;
+                return fmt::format("*({}) -> {}", orig_expr, value);
             } else {
-                std::cout << "DEBUG: Dereference resulted in nil expression" << std::endl;
+                std::cout << "DEBUG: Dereference resulted in nil" << std::endl;
             }
         } catch(const std::runtime_error& e) {
             std::cout << "DEBUG: Dereference failed: " << e.what() << std::endl;
         }
         
-        // If all else fails
-        std::cout << "DEBUG: Falling back to pointer value" << std::endl;
+        // If we get here, just show pointer value
         return fmt::format("<ptr:{}>", orig_expr);
     } catch(const std::runtime_error& e) {
         std::cout << "DEBUG: Error in pointer analysis: " << e.what() << std::endl;
         return "<error>";
     }
 }
-
 
 std::string get_array_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
     if(depth > 20) return "<max-depth-reached>";
