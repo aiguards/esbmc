@@ -3,6 +3,10 @@
 bool assign_params_as_non_det::runOnFunction(
   std::pair<const dstring, goto_functiont> &F)
 {
+  // check if it's a pointer
+  // if it's a pointer first create an obj
+  // create if-statment if (non_bool_dont_count) assign pointer = ref(obj) .property("do not count")
+
   if (context.find_symbol(F.first) == nullptr)
     return false; // Not exist
 
@@ -59,3 +63,5 @@ bool assign_params_as_non_det::runOnFunction(
   goto_program.update();
   return true;
 }
+
+// End of file
