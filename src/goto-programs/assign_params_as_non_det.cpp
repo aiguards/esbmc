@@ -36,7 +36,7 @@ bool assign_params_as_non_det::runOnFunction(
 
       // get subType() => int
       typet subt = lhs.type().subtype();
-      
+
       // create obj and move it to the symbol table
       symbolt s;
       s.name = "obj_" + id2string(_id);
@@ -45,7 +45,8 @@ bool assign_params_as_non_det::runOnFunction(
       context.move(s);
 
       // create decl statement => int obj_(id);
-      code_declt _decl(symbol_expr(s));;
+      code_declt _decl(symbol_expr(s));
+      ;
 
       // create a goto_instructiont DECL and insert to the original program  => DECL obj_(id)
       goto_programt tmp;
@@ -53,31 +54,35 @@ bool assign_params_as_non_det::runOnFunction(
       decl_statement->location = l;
       decl_statement->function = it->location.get_function();
       migrate_expr(_decl, decl_statement->code);
-      
+
       // insert
       goto_program.insert_swap(it++, *decl_statement);
       --it;
 
       // do assignment => lhs = &obj_(id)
-      code_assignt assign(lhs, address_of_exprt(symbol_exprt(s.name, s.type)));
+      code_assignt assign(lhs, address_of_exprt(symbol_expr(s)));
       assign.location() = l;
-      codet if_body ;
+      codet if_body;
       if_body.make_block();
       if_body.move_to_operands(assign);
-      
+
       // create if statement => if(nondet_bool()) lhs = &obj_(id);
+
+      exprt _non_det = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
+      codet _non_det_code("expression");
+      _non_det_code.location() = l;
+      _non_det_code.move_to_operands(_non_det);
+
       codet if_code("ifthenelse");
-      if_code.operands().resize(3);
-      if_code.op0() = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
-      if_code.op1() = if_body;
-      
+      if_code.copy_to_operands(_non_det_code, if_body);
+
       // inser if statement to the goto program
       goto_programt tmp2;
       goto_programt::targett if_statement = tmp2.add_instruction(GOTO);
       if_statement->location = l;
       if_statement->function = it->location.get_function();
       migrate_expr(if_code, if_statement->code);
-      
+
       // insert
       goto_program.insert_swap(it++, *if_statement);
       --it;
