@@ -32,59 +32,38 @@ bool assign_params_as_non_det::runOnFunction(
 
     if (lhs.type().is_pointer())
     {
-      // e.g. int* lhs;
-
-      // get subType() => int
+      // get subType()
       typet subt = lhs.type().subtype();
-
+      
       // create obj and move it to the symbol table
       symbolt s;
-      s.name = "obj_" + id2string(_id);
+      s.name = "obj_" + id2string(_id); 
       s.type = subt;
       s.location = l;
       context.move(s);
 
-      // create decl statement => int obj_(id);
-      code_declt _decl(symbol_expr(s));
-      ;
+      // Create nondet bool condition
+      exprt nondet_bool = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
 
-      // create a goto_instructiont DECL and insert to the original program  => DECL obj_(id)
-      goto_programt tmp;
-      goto_programt::targett decl_statement = tmp.add_instruction(DECL);
-      decl_statement->location = l;
-      decl_statement->function = it->location.get_function();
-      migrate_expr(_decl, decl_statement->code);
-
-      // insert
-      goto_program.insert_swap(it++, *decl_statement);
-      --it;
-
-      // do assignment => lhs = &obj_(id)
+      // Create assignment: lhs = &obj
       code_assignt assign(lhs, address_of_exprt(symbol_expr(s)));
       assign.location() = l;
-      codet if_body;
-      if_body.make_block();
-      if_body.move_to_operands(assign);
 
-      // create if statement => if(nondet_bool()) lhs = &obj_(id);
+      // Add to goto program
+      goto_programt tmp;
+      goto_programt::targett t = tmp.add_instruction(GOTO);
+      t->location = l;
+      t->function = it->location.get_function();
+      migrate_expr(nondet_bool, t->guard);
 
-      exprt _non_det = symbol_expr(*context.find_symbol("c:@F@nondet_bool"));
-      codet _non_det_code("expression");
-      _non_det_code.location() = l;
-      _non_det_code.move_to_operands(_non_det);
+      goto_programt::targett assign_instr = tmp.add_instruction(ASSIGN);
+      assign_instr->location = l;
+      assign_instr->function = it->location.get_function();
+      migrate_expr(assign, assign_instr->code);
 
-      codet if_code("ifthenelse");
-      if_code.copy_to_operands(_non_det_code, if_body);
-
-      // inser if statement to the goto program
-      goto_programt tmp2;
-      goto_programt::targett if_statement = tmp2.add_instruction(GOTO);
-      if_statement->location = l;
-      if_statement->function = it->location.get_function();
-      migrate_expr(if_code, if_statement->code);
-
-      // insert
-      goto_program.insert_swap(it++, *if_statement);
+      // insert both instructions
+      goto_program.insert_swap(it++, *t);
+      goto_program.insert_swap(it++, *assign_instr);
       --it;
     }
     else
@@ -113,3 +92,5 @@ bool assign_params_as_non_det::runOnFunction(
   goto_program.update();
   return true;
 }
+
+//End of file
