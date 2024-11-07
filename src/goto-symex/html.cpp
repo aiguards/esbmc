@@ -1192,50 +1192,93 @@ void inspect_steps(const goto_tracet &trace, const namespacet &ns) {
 }
 
 
+void dump_struct_contents(const expr2tc& expr, const namespacet& ns, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    
+    if(is_nil_expr(expr)) {
+        std::cout << indent << "<nil struct>\n";
+        return;
+    }
+
+    // First try to dereference if it's a pointer
+    expr2tc current_expr = expr;
+    if(is_pointer_type(expr->type)) {
+        try {
+            current_expr = dereference2tc(expr->type, expr);
+            std::cout << indent << "Dereferenced pointer successfully\n";
+        } catch(const std::exception& e) {
+            std::cout << indent << "Failed to dereference pointer: " << e.what() << "\n";
+            return;
+        }
+    }
+
+    // Now examine the struct contents
+    if(is_struct_type(current_expr->type)) {
+        const struct_type2t& struct_type = to_struct_type(current_expr->type);
+        std::cout << indent << "Struct with " << struct_type.members.size() << " members:\n";
+
+        for(size_t i = 0; i < struct_type.members.size(); i++) {
+            const irep_idt& member_name = struct_type.member_names[i];
+            const type2tc& member_type = struct_type.members[i];
+
+            std::cout << indent << "Member " << i << ": " << id2string(member_name) << "\n";
+            std::cout << indent << "  Type: " << get_type_id(member_type) << "\n";
+
+            try {
+                // Create member access expression
+                expr2tc member_expr = member2tc(member_type, current_expr, member_name);
+                
+                // Get the actual value
+                if(is_pointer_type(member_type)) {
+                    std::cout << indent << "  Raw pointer value: " << from_expr(ns, "", member_expr) << "\n";
+                    // Recursively inspect pointed-to struct
+                    dump_struct_contents(member_expr, ns, depth + 1);
+                } else {
+                    std::string value = from_expr(ns, "", member_expr);
+                    std::cout << indent << "  Value: " << value << "\n";
+                }
+            } catch(const std::exception& e) {
+                std::cout << indent << "  Error accessing member: " << e.what() << "\n";
+            }
+        }
+    }
+}
+
 void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
     std::cout << "\nDEBUG Tracking variable states:\n";
     
-    // Track all assignments and their values
     for(const auto &step : trace.steps) {
         if(!step.is_assignment())
             continue;
             
         std::cout << "\nDEBUG Assignment step:\n";
-        
-        // Get assignment info
         std::string lhs_str = from_expr(ns, "", step.lhs);
-        std::string value_str = from_expr(ns, "", step.value);
+        std::cout << "LHS: " << lhs_str << "\n";
         
-        std::cout << "  LHS: " << lhs_str << "\n";
-        std::cout << "  Value: " << value_str << "\n";
+        // Deep inspection of LHS
+        std::cout << "LHS detailed struct inspection:\n";
+        dump_struct_contents(step.lhs, ns);
         
-        // Special handling for struct field assignments
+        // Deep inspection of RHS/value if it exists
+        if(!is_nil_expr(step.value)) {
+            std::cout << "\nRHS detailed struct inspection:\n";
+            dump_struct_contents(step.value, ns);
+        }
+
+        // Special handling for device struct updates
         if(lhs_str.find("device.") != std::string::npos) {
-            std::cout << "  DEVICE FIELD UPDATE:\n";
-            std::cout << "    Field: " << lhs_str.substr(lhs_str.find("device.") + 7) << "\n";
-            std::cout << "    New Value: " << value_str << "\n";
+            std::cout << "\nDEVICE FIELD UPDATE DETECTED:\n";
+            std::cout << "Field: " << lhs_str.substr(lhs_str.find("device.") + 7) << "\n";
             
-            // Try to get the full device state at this point
-            if(const expr2t* value_ptr = step.value.get()) {
-                std::cout << "    Current Device State:\n";
-                if(is_struct_type(step.value->type)) {
-                    const struct_type2t& s = to_struct_type(step.value->type);
-                    for(size_t i = 0; i < s.members.size(); i++) {
-                        try {
-                            expr2tc field_expr = member2tc(
-                                s.members[i],
-                                step.value,
-                                s.member_names[i]);
-                                
-                            std::string field_value = from_expr(ns, "", field_expr);
-                            std::cout << "      " << id2string(s.member_names[i]) 
-                                     << ": " << field_value << "\n";
-                        } catch(...) {
-                            std::cout << "      " << id2string(s.member_names[i]) 
-                                     << ": <error getting value>\n";
-                        }
-                    }
+            // Try to get the parent device struct
+            try {
+                if(is_member2t(step.lhs)) {
+                    const member2t& member = to_member2t(step.lhs);
+                    std::cout << "Full device state inspection:\n";
+                    dump_struct_contents(member.source_value, ns);
                 }
+            } catch(const std::exception& e) {
+                std::cout << "Error inspecting device struct: " << e.what() << "\n";
             }
         }
     }
@@ -1262,7 +1305,7 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
     bool found_violation = false;
 
     track_variable_state(goto_trace, ns);
-    inspect_steps(goto_trace, ns);
+    // inspect_steps(goto_trace, ns);
 
     // First pass - collect referenced files
     for(const auto &step : goto_trace.steps) {
