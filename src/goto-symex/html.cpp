@@ -1,6 +1,7 @@
 #include "util/message.h"
 #include <fstream>
 #include <goto-symex/goto_trace.h>
+#include <goto-symex/uprintf.h>
 #include <ostream>
 #include <sstream>
 #include <unordered_map>
@@ -829,114 +830,16 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "null";
     }
 
-    // Handle pointer types
+    // For pointer types, use uprintf to get the value
     if(is_pointer_type(expr->type)) {
         const pointer_type2t& ptr_type = to_pointer_type(expr->type);
         std::cout << "DEBUG: Pointer analysis:\n";
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        try {
-            // Get type information
-            const type2t* subtype = ptr_type.subtype.get();
-            std::cout << "DEBUG: Attempting struct member access\n";
-
-            // If it's a struct type, try to access its members
-            if(is_struct_type(ptr_type.subtype)) {
-                const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
-                json struct_data;
-                bool found_data = false;
-
-                // First attempt - try direct member access
-                for(size_t i = 0; i < struct_type.members.size(); i++) {
-                    const irep_idt& member_name = struct_type.member_names[i];
-                    const type2tc& member_type = struct_type.members[i];
-                    
-                    try {
-                        // Create member expression
-                        expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
-                        expr2tc member_expr = expr2tc(std::make_shared<member2t>(
-                            member_type, deref_expr, member_name));
-                            
-                        std::string member_val;
-                        
-                        // Handle different member types
-                        if(is_array_type(member_type)) {
-                            // For char arrays (strings)
-                            const array_type2t& arr_type = to_array_type(member_type);
-                            if(is_byte_type(arr_type.subtype)) {
-                                std::string array_val = from_expr(ns, "", member_expr);
-                                if(!array_val.empty() && array_val != "NULL") {
-                                    // Clean up string representation
-                                    if(array_val.front() == '"' && array_val.back() == '"') {
-                                        array_val = array_val.substr(1, array_val.length() - 2);
-                                    }
-                                    member_val = array_val;
-                                    found_data = true;
-                                }
-                            }
-                        }
-                        else if(is_constant_int2t(member_expr)) {
-                            const constant_int2t& c = to_constant_int2t(member_expr);
-                            member_val = integer2string(c.value);
-                            found_data = true;
-                        }
-                        else {
-                            // Try to get raw value
-                            std::string raw_member_val = from_expr(ns, "", member_expr);
-                            if(!raw_member_val.empty() && raw_member_val != "NULL") {
-                                member_val = raw_member_val;
-                                found_data = true;
-                            }
-                        }
-                        
-                        if(found_data && !member_val.empty()) {
-                            struct_data[id2string(member_name)] = member_val;
-                        }
-                        
-                    } catch(const std::exception& e) {
-                        std::cout << "Member access error for " << id2string(member_name) 
-                                 << ": " << e.what() << "\n";
-                    }
-                }
-
-                if(found_data) {
-                    return struct_data.dump();
-                }
-            }
-            
-            // Second attempt - try dynamic array access if available
-            if(raw_val.find("dynamic_") != std::string::npos) {
-                try {
-                    size_t array_start = raw_val.find("[");
-                    if(array_start != std::string::npos) {
-                        std::string base_name = raw_val.substr(0, array_start);
-                        expr2tc array_expr = expr2tc(std::make_shared<symbol2t>(ptr_type.subtype, base_name));
-                        
-                        // Try to access first few elements
-                        json array_data;
-                        for(int i = 0; i < 5; i++) {
-                            expr2tc idx = expr2tc(std::make_shared<constant_int2t>(type2tc(), BigInt(i)));
-                            expr2tc elem_expr = expr2tc(std::make_shared<index2t>(ptr_type.subtype, array_expr, idx));
-                            
-                            std::string elem_val = from_expr(ns, "", elem_expr);
-                            if(!elem_val.empty() && elem_val != "NULL") {
-                                array_data[std::to_string(i)] = elem_val;
-                            }
-                        }
-                        
-                        if(!array_data.empty()) {
-                            return array_data.dump();
-                        }
-                    }
-                } catch(...) {}
-            }
-
-        } catch(const std::exception& e) {
-            std::cout << "DEBUG: Exception during struct analysis: " << e.what() << "\n";
-        }
-
-        // If all attempts failed, return formatted raw value
+        char buf[1024];
+        uprintf("Pointer value: %p\n", expr.get());  // Direct uprintf call
+        
         if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
             return "null";
         }
@@ -945,8 +848,8 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         }
         return "\"" + raw_val + "\"";
     }
-
-    // Handle basic types
+    
+    // For basic types (non-pointers)
     try {
         std::string val = from_expr(ns, "", expr);
         if(val.empty()) {
