@@ -853,18 +853,26 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                 // Print type information
                 std::cout << "DEBUG: Expression type info:\n";
                 std::cout << "Expr ID: " << get_expr_id(expr) << "\n";
-                if(expr->type) {
-                    std::cout << "Type ID: " << get_type_id(expr->type) << "\n";
+                std::cout << "Type ID: " << get_type_id(expr->type) << "\n";
+                
+                // Get pointer type info
+                const pointer_type2t &ptr_type = to_pointer_type(expr->type);
+                std::cout << "DEBUG: Pointed-to type info:\n";
+                std::cout << "Subtype ID: " << get_type_id(ptr_type.subtype) << "\n";
+                
+                // If it's a struct type, get more details
+                if(is_struct_type(ptr_type.subtype)) {
+                    const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
+                    std::cout << "DEBUG: Found struct type with " << struct_type.members.size() << " members\n";
+                    for(size_t i = 0; i < struct_type.members.size(); ++i) {
+                        std::cout << "Member " << i << " type: " << get_type_id(struct_type.members[i]) << "\n";
+                        std::cout << "Member " << i << " name: " << struct_type.member_names[i] << "\n";
+                    }
                 }
                 
-                // If it's a pointer to a struct, try to get the struct info
-                if(is_pointer_type(expr->type)) {
-                    const pointer_type2t &ptr_type = to_pointer_type(expr->type);
-                    if(is_struct_type(ptr_type.subtype)) {
-                        std::cout << "DEBUG: Found pointer to struct type\n";
-                        const struct_type2t &struct_type = to_struct_type(ptr_type.subtype);
-                        std::cout << "Struct has " << struct_type.members.size() << " members\n";
-                    }
+                // Try to access the actual value
+                if(is_symbol2t(expr)) {
+                    std::cout << "DEBUG: Symbol name: " << to_symbol2t(expr).get_symbol_name() << "\n";
                 }
             }
         } catch(const std::exception& e) {
