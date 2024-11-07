@@ -1244,80 +1244,64 @@ void dump_struct_contents(const expr2tc& expr, const namespacet& ns, int depth =
     }
 }
 
-void print_struct_member_values(const expr2tc& expr, const namespacet& ns, int depth = 0) {
+void decode_device_struct(const expr2tc& expr, const namespacet& ns, int depth = 0) {
     std::string indent(depth * 2, ' ');
     
     if(is_nil_expr(expr)) {
-        std::cout << indent << "<nil struct>\n";
+        std::cout << indent << "Device struct is nil\n";
         return;
     }
 
-    std::cout << indent << "Analyzing struct at " << expr.get() << ":\n";
-
-    // First get the base type
-    if(!is_struct_type(expr->type)) {
-        if(is_pointer_type(expr->type)) {
-            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-            if(is_struct_type(ptr_type.subtype)) {
-                // Try to dereference
-                try {
-                    expr2tc deref = dereference2tc(ptr_type.subtype, expr);
-                    std::cout << indent << "Dereferenced pointer to struct:\n";
-                    print_struct_member_values(deref, ns, depth + 1);
-                    return;
-                } catch(const std::exception& e) {
-                    std::cout << indent << "Failed to dereference: " << e.what() << "\n";
-                }
-            }
-        }
-        std::cout << indent << "Not a struct type: " << get_type_id(expr->type) << "\n";
-        return;
-    }
-
-    const struct_type2t& struct_type = to_struct_type(expr->type);
+    std::cout << indent << "Analyzing device struct at " << expr.get() << ":\n";
     
-    // Print member names and types first
-    std::cout << indent << "Struct has " << struct_type.members.size() << " members:\n";
-    
-    for(size_t i = 0; i < struct_type.members.size(); i++) {
-        const irep_idt& member_name = struct_type.member_names[i];
-        const type2tc& member_type = struct_type.members[i];
-        
-        std::cout << indent << "Member " << i << ": " << id2string(member_name) << "\n";
-        std::cout << indent << "  Type: " << get_type_id(member_type) << "\n";
+    // Handle pointer to struct
+    if(is_pointer_type(expr->type)) {
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+        std::cout << indent << "Device is pointer type:\n";
+        std::cout << indent << "  Points to type: " << get_type_id(ptr_type.subtype) << "\n";
         
         try {
-            // Create member expression
-            expr2tc member_expr = member2tc(member_type, expr, member_name);
-            
-            std::cout << indent << "  Raw member expr: " << from_expr(ns, "", member_expr) << "\n";
-            
-            if(is_pointer_type(member_type)) {
-                std::cout << indent << "  Pointer member, trying to dereference:\n";
-                try {
-                    expr2tc deref = dereference2tc(to_pointer_type(member_type).subtype, member_expr); 
-                    print_struct_member_values(deref, ns, depth + 2);
-                } catch(const std::exception& e) {
-                    std::cout << indent << "  Failed to dereference: " << e.what() << "\n";
+            // Try to get the actual struct type
+            if(is_struct_type(ptr_type.subtype)) {
+                const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
+                std::cout << indent << "Found device struct definition with " 
+                         << struct_type.members.size() << " members:\n";
+                
+                // Try to dereference the pointer
+                expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
+                std::cout << indent << "Dereferenced device struct:\n";
+                
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    const irep_idt& member_name = struct_type.member_names[i];
+                    const type2tc& member_type = struct_type.members[i];
+                    
+                    std::cout << indent << "  Member " << i << ": " << id2string(member_name) << "\n";
+                    std::cout << indent << "    Type: " << get_type_id(member_type) << "\n";
+                    
+                    try {
+                        // Create member access expression
+                        expr2tc member_expr = member2tc(member_type, deref_expr, member_name);
+                        std::cout << indent << "    Value: " << from_expr(ns, "", member_expr) << "\n";
+                        
+                        // For array members (like char arrays)
+                        if(is_array_type(member_type)) {
+                            std::cout << indent << "    Array contents: ";
+                            const array_type2t& arr_type = to_array_type(member_type);
+                            dump_expr_recursive(member_expr, depth + 3);
+                        }
+                    } catch(const std::exception& e) {
+                        std::cout << indent << "    Error accessing member: " << e.what() << "\n";
+                    }
                 }
-            }
-            else if(is_struct_type(member_type)) {
-                std::cout << indent << "  Nested struct:\n";
-                print_struct_member_values(member_expr, ns, depth + 2);
-            }
-            else {
-                // Try to get value directly
-                std::cout << indent << "  Value: ";
-                if(is_constant_expr(member_expr)) {
-                    std::cout << from_expr(ns, "", member_expr) << "\n";
-                } else {
-                    std::cout << "<non-constant>\n";
-                    dump_expr_recursive(member_expr, depth + 2);
-                }
+            } else {
+                std::cout << indent << "Not pointing to a struct type!\n";
             }
         } catch(const std::exception& e) {
-            std::cout << indent << "  Error accessing member: " << e.what() << "\n";
+            std::cout << indent << "Failed to dereference device pointer: " << e.what() << "\n";
+            std::cout << indent << "Raw pointer value: " << from_expr(ns, "", expr) << "\n";
         }
+    } else {
+        std::cout << indent << "Device is not a pointer type! Type is: " << get_type_id(expr->type) << "\n";
     }
 }
 
@@ -1331,27 +1315,23 @@ void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
         std::cout << "\nDEBUG Assignment step at line " 
                   << step.pc->location.get_line() << ":\n";
         
-        // Analyze LHS
-        std::cout << "Left-hand side detailed inspection:\n";
-        std::cout << "Expression: " << from_expr(ns, "", step.lhs) << "\n";
-        print_struct_member_values(step.lhs, ns);
-        
-        // Analyze RHS
-        if(!is_nil_expr(step.value)) {
-            std::cout << "\nRight-hand side detailed inspection:\n";
-            std::cout << "Expression: " << from_expr(ns, "", step.value) << "\n";
-            print_struct_member_values(step.value, ns);
-        }
-
-        // Special treatment for device struct
+        // Special detailed handling for device struct
         std::string lhs_str = from_expr(ns, "", step.lhs);
-        if(lhs_str.find("device") != std::string::npos) {
-            std::cout << "\nDEVICE STRUCT UPDATE DETECTED:\n";
+        if(lhs_str == "device" || lhs_str.find("device.") != std::string::npos) {
+            std::cout << "DEVICE STRUCT UPDATE:\n";
+            std::cout << "LHS: " << lhs_str << "\n";
+            decode_device_struct(step.lhs, ns);
+            
+            if(!is_nil_expr(step.value)) {
+                std::cout << "New value:\n";
+                decode_device_struct(step.value, ns);
+            }
+            
+            // If this is a member update, try to get full struct
             if(is_member2t(step.lhs)) {
                 const member2t& member = to_member2t(step.lhs);
-                std::cout << "Device struct field " << member.member << " updated\n";
-                std::cout << "Full device state after update:\n";
-                print_struct_member_values(member.source_value, ns);
+                std::cout << "\nFull device struct after field " << member.member << " update:\n";
+                decode_device_struct(member.source_value, ns);
             }
         }
     }
