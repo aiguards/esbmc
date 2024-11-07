@@ -841,17 +841,22 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
             
             // Try to get the actual struct pointer and dump it
             try {
-                if(auto* ptr = expr.get()) {
-                    std::cout << "DEBUG: Struct info using __builtin_dump_struct:\n";
+                void* ptr = expr.get();
+                std::cout << "DEBUG: Got pointer: " << ptr << "\n";
+                
+                if(ptr && ptr != (void*)0 && ptr != (void*)-1) {
+                    std::cout << "DEBUG: Attempting struct dump\n";
                     
                     // Define print function with varargs
                     auto print_fn = [](const char* fmt, ...) {
                         va_list args;
                         va_start(args, fmt);
+                        std::cout << "DEBUG dump output: ";
                         vprintf(fmt, args);
                         va_end(args);
                     };
                     
+                    // Verify struct layout matches what we expect
                     struct RunPlanStep {
                         char* client_id;
                         char* device_type;
@@ -860,10 +865,26 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                         char* location_id;
                         char* user_presence_exp;
                     };
-                    __builtin_dump_struct((const RunPlanStep*)ptr, print_fn);
+
+                    std::cout << "DEBUG: RunPlanStep size: " << sizeof(RunPlanStep) << "\n";
+                    std::cout << "DEBUG: About to call __builtin_dump_struct\n";
+                    
+                    // Try to safely cast and dump
+                    const RunPlanStep* safe_ptr = static_cast<const RunPlanStep*>(ptr);
+                    if(safe_ptr) {
+                        std::cout << "DEBUG: Safe cast successful\n";
+                        __builtin_dump_struct(safe_ptr, print_fn);
+                        std::cout << "DEBUG: Dump complete\n";
+                    } else {
+                        std::cout << "DEBUG: Safe cast failed\n";
+                    }
+                } else {
+                    std::cout << "DEBUG: Invalid pointer value\n";
                 }
             } catch(const std::exception& e) {
                 std::cout << "DEBUG: Exception during struct dump: " << e.what() << "\n";
+            } catch(...) {
+                std::cout << "DEBUG: Unknown exception during struct dump\n";
             }
         }
         
