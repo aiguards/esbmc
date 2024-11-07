@@ -829,101 +829,121 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "null";
     }
 
-    // Try to extract struct info directly from the expression
-    try {
-        // Get raw debug info first
-        std::string debug_str = expr->pretty(0);
-        std::cout << "DEBUG: Raw expression: " << debug_str << "\n";
-        
-        json struct_data;
+    // Handle pointer types
+    if(is_pointer_type(expr->type)) {
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+        std::cout << "DEBUG: Pointer analysis:\n";
+        std::string raw_val = from_expr(ns, "", expr);
+        std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        // For DeviceRecord specific fields
-        std::vector<std::string> field_names = {
-            "duid", "client_id", "location_id", "device_type", 
-            "federated_identity", "user_presence_exp"
-        };
+        try {
+            // Get type information
+            const type2t* subtype = ptr_type.subtype.get();
+            std::cout << "DEBUG: Attempting struct member access\n";
 
-        if(is_pointer_type(expr->type)) {
-            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-            std::cout << "DEBUG: Pointer analysis:\n";
-            std::string raw_val = from_expr(ns, "", expr);
-            std::cout << "Raw pointer value: " << raw_val << "\n";
+            // If it's a struct type, try to access its members
+            if(is_struct_type(ptr_type.subtype)) {
+                const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
+                json struct_data;
+                bool found_data = false;
 
-            try {
-                expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
-                
-                for(const auto& field : field_names) {
+                // First attempt - try direct member access
+                for(size_t i = 0; i < struct_type.members.size(); i++) {
+                    const irep_idt& member_name = struct_type.member_names[i];
+                    const type2tc& member_type = struct_type.members[i];
+                    
                     try {
-                        // Create member expression for each field
-                        expr2tc field_expr = expr2tc(std::make_shared<member2t>(
-                            deref_expr->type, deref_expr, field));
+                        // Create member expression
+                        expr2tc deref_expr = expr2tc(std::make_shared<dereference2t>(ptr_type.subtype, expr));
+                        expr2tc member_expr = expr2tc(std::make_shared<member2t>(
+                            member_type, deref_expr, member_name));
                             
-                        // Get raw field value
-                        std::string field_val;
-                        if(is_array_type(field_expr->type)) {
+                        std::string member_val;
+                        
+                        // Handle different member types
+                        if(is_array_type(member_type)) {
                             // For char arrays (strings)
-                            field_val = field_expr->pretty(0);
-                            // Clean up the value
-                            if(field_val.find("array") != std::string::npos) {
-                                size_t start = field_val.find("value: ");
-                                if(start != std::string::npos) {
-                                    field_val = field_val.substr(start + 7);
-                                    if(!field_val.empty() && field_val != "NULL") {
-                                        struct_data[field] = field_val;
+                            const array_type2t& arr_type = to_array_type(member_type);
+                            if(is_byte_type(arr_type.subtype)) {
+                                std::string array_val = from_expr(ns, "", member_expr);
+                                if(!array_val.empty() && array_val != "NULL") {
+                                    // Clean up string representation
+                                    if(array_val.front() == '"' && array_val.back() == '"') {
+                                        array_val = array_val.substr(1, array_val.length() - 2);
                                     }
+                                    member_val = array_val;
+                                    found_data = true;
                                 }
                             }
                         }
-                        else if(is_constant_int2t(field_expr)) {
-                            const constant_int2t& c = to_constant_int2t(field_expr);
-                            struct_data[field] = integer2string(c.value);
+                        else if(is_constant_int2t(member_expr)) {
+                            const constant_int2t& c = to_constant_int2t(member_expr);
+                            member_val = integer2string(c.value);
+                            found_data = true;
                         }
                         else {
-                            field_val = field_expr->pretty(0);
-                            if(!field_val.empty() && field_val != "NULL") {
-                                struct_data[field] = field_val;
+                            // Try to get raw value
+                            std::string raw_member_val = from_expr(ns, "", member_expr);
+                            if(!raw_member_val.empty() && raw_member_val != "NULL") {
+                                member_val = raw_member_val;
+                                found_data = true;
                             }
                         }
+                        
+                        if(found_data && !member_val.empty()) {
+                            struct_data[id2string(member_name)] = member_val;
+                        }
+                        
                     } catch(const std::exception& e) {
-                        std::cout << "Failed to get field " << field << ": " << e.what() << "\n";
+                        std::cout << "Member access error for " << id2string(member_name) 
+                                 << ": " << e.what() << "\n";
                     }
                 }
 
-                // Try to get any additional debug info
-                if(const type2t* subtype = ptr_type.subtype.get()) {
-                    std::string type_info = subtype->pretty(0);
-                    std::cout << "DEBUG: Subtype info: " << type_info << "\n";
-                    struct_data["__type_info"] = type_info;
+                if(found_data) {
+                    return struct_data.dump();
                 }
-
-                if(!struct_data.empty()) {
-                    std::string result = struct_data.dump();
-                    std::cout << "DEBUG: Captured struct data: " << result << "\n";
-                    return result;
-                }
-
-            } catch(const std::exception& e) {
-                std::cout << "DEBUG: Failed to dereference: " << e.what() << "\n";
+            }
+            
+            // Second attempt - try dynamic array access if available
+            if(raw_val.find("dynamic_") != std::string::npos) {
+                try {
+                    size_t array_start = raw_val.find("[");
+                    if(array_start != std::string::npos) {
+                        std::string base_name = raw_val.substr(0, array_start);
+                        expr2tc array_expr = expr2tc(std::make_shared<symbol2t>(ptr_type.subtype, base_name));
+                        
+                        // Try to access first few elements
+                        json array_data;
+                        for(int i = 0; i < 5; i++) {
+                            expr2tc idx = expr2tc(std::make_shared<constant_int2t>(type2tc(), BigInt(i)));
+                            expr2tc elem_expr = expr2tc(std::make_shared<index2t>(ptr_type.subtype, array_expr, idx));
+                            
+                            std::string elem_val = from_expr(ns, "", elem_expr);
+                            if(!elem_val.empty() && elem_val != "NULL") {
+                                array_data[std::to_string(i)] = elem_val;
+                            }
+                        }
+                        
+                        if(!array_data.empty()) {
+                            return array_data.dump();
+                        }
+                    }
+                } catch(...) {}
             }
 
-            // If we couldn't get struct data, try to get raw debug info
-            if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
-                struct_data["raw_value"] = "null";
-            } else if(raw_val.find("invalid-object") != std::string::npos) {
-                struct_data["raw_value"] = "invalid-object";
-            } else {
-                struct_data["raw_value"] = raw_val;
-            }
-
-            // Include debug expression info
-            struct_data["debug_expr"] = debug_str;
-
-            std::string result = struct_data.dump();
-            std::cout << "DEBUG: Captured value: " << result << "\n";
-            return result;
+        } catch(const std::exception& e) {
+            std::cout << "DEBUG: Exception during struct analysis: " << e.what() << "\n";
         }
-    } catch(const std::exception& e) {
-        std::cout << "DEBUG: Exception in struct analysis: " << e.what() << "\n";
+
+        // If all attempts failed, return formatted raw value
+        if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
+            return "null";
+        }
+        if(raw_val.find("invalid-object") != std::string::npos) {
+            return "\"invalid-object\"";
+        }
+        return "\"" + raw_val + "\"";
     }
 
     // Handle basic types
@@ -943,8 +963,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         } catch(...) {}
 
         return "\"" + val + "\"";
-    } catch(const std::exception& e) {
-        std::cout << "DEBUG: Exception in basic type handling: " << e.what() << "\n";
+    } catch(...) {
         return "null";
     }
 }
