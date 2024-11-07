@@ -1,9 +1,15 @@
-# First find libdwarf
-find_package(PkgConfig REQUIRED)
-pkg_check_modules(DWARF REQUIRED libdwarf)
-find_library(ELF_LIBRARY elf)
-if(ELF_LIBRARY)
-    target_link_libraries(symex ${ELF_LIBRARY})
+# Direct approach without pkg-config
+find_library(DWARF_LIBRARY NAMES dwarf libdwarf
+    PATHS /usr/lib /usr/local/lib /usr/lib/x86_64-linux-gnu)
+find_path(DWARF_INCLUDE_DIR NAMES libdwarf.h dwarf.h
+    PATHS /usr/include /usr/local/include)
+
+if(NOT DWARF_LIBRARY)
+    message(FATAL_ERROR "libdwarf not found")
+endif()
+
+if(NOT DWARF_INCLUDE_DIR)
+    message(FATAL_ERROR "libdwarf headers not found")
 endif()
 
 add_library(symex symex_target.cpp symex_target_equation.cpp symex_assign.cpp
