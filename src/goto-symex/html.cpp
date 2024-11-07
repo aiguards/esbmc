@@ -859,66 +859,6 @@ std::string type_id_to_string(type2t::type_ids id) {
     }
 }
 
-std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
-    if(depth > 20) return "<max-depth-reached>";
-
-    if(is_nil_expr(expr)) {
-        return "NULL";
-    }
-
-    std::cout << "DEBUG: Analyzing pointer..." << std::endl;
-    
-    try {
-        std::string expr_str = from_expr(ns, "", expr);
-        std::cout << "DEBUG: Full expression string: " << expr_str << std::endl;
-        std::cout << "DEBUG: Expression type ID: " << type_id_to_string(expr->type->type_id) << std::endl;
-        
-        if(is_symbol2t(expr)) {
-            const symbol2t& sym = to_symbol2t(expr);
-            std::cout << "DEBUG: Symbol name: " << sym.thename << std::endl;
-            std::cout << "DEBUG: Symbol type: " << from_type(ns, "", sym.type) << std::endl;
-            
-            const pointer_type2t& ptr_type = to_pointer_type(expr->type);
-            std::cout << "DEBUG: Pointed-to type ID: " << type_id_to_string(ptr_type.subtype->type_id) << std::endl;
-            
-            if(ptr_type.subtype->type_id == type2t::struct_id) {
-                const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
-                std::cout << "DEBUG: Struct name: " << struct_type.name << std::endl;
-                std::cout << "DEBUG: Number of members: " << struct_type.members.size() << std::endl;
-                
-                for(size_t i = 0; i < struct_type.members.size(); i++) {
-                    std::cout << "DEBUG: Member " << i << ": " 
-                             << struct_type.member_names[i] << " of type " 
-                             << type_id_to_string(struct_type.members[i]->type_id) << std::endl;
-                }
-            }
-            
-            try {
-                expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
-                if(!is_nil_expr(deref_expr)) {
-                    std::cout << "DEBUG: Successfully created dereference" << std::endl;
-                    std::cout << "DEBUG: Dereferenced type: " << type_id_to_string(deref_expr->type->type_id) << std::endl;
-                    
-                    if(deref_expr->type->type_id == type2t::struct_id) {
-                        std::cout << "DEBUG: Dereferenced to struct type" << std::endl;
-                        return get_struct_values(ns, deref_expr, seen_addresses, depth + 1);
-                    }
-                    
-                    std::string value = from_expr(ns, "", deref_expr);
-                    std::cout << "DEBUG: Dereferenced value: " << value << std::endl;
-                    return fmt::format("*({}) -> {}", expr_str, value);
-                }
-            } catch(const std::runtime_error& e) {
-                std::cout << "DEBUG: Dereference failed: " << e.what() << std::endl;
-            }
-        }
-
-        return fmt::format("<ptr:{}>", expr_str);
-    } catch(const std::runtime_error& e) {
-        std::cout << "DEBUG: Error in pointer analysis: " << e.what() << std::endl;
-        return "<error>";
-    }
-}
 
 // Helper to get the original name of a variable during symex
 std::string get_original_name(const expr2tc& expr) {
@@ -935,6 +875,82 @@ std::string get_original_name(const expr2tc& expr) {
     }
     
     return name;
+}
+
+std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
+    if(depth > 20) return "<max-depth-reached>";
+
+    if(is_nil_expr(expr)) {
+        std::cout << "DEBUG: Nil expression detected" << std::endl;
+        return "NULL";
+    }
+
+    std::cout << "\nDEBUG: === Pointer Analysis Start ===" << std::endl;
+    
+    try {
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+        std::cout << "DEBUG: Pointed-to type ID: " << type_id_to_string(ptr_type.subtype->type_id) << std::endl;
+        
+        // Get both original and dereferenced expressions
+        std::string orig_expr = from_expr(ns, "", expr);
+        std::cout << "DEBUG: Original expression: " << orig_expr << std::endl;
+        
+        if(is_symbol2t(expr)) {
+            const symbol2t& sym = to_symbol2t(expr);
+            std::cout << "DEBUG: Symbol name: " << sym.thename << std::endl;
+            
+            // Try to look up the symbol type
+            const symbolt* orig_sym = ns.lookup(sym.thename);
+            if(orig_sym) {
+                std::cout << "DEBUG: Found original symbol" << std::endl;
+                std::cout << "DEBUG: Original type: " << from_type(ns, "", orig_sym->type) << std::endl;
+            } else {
+                std::cout << "DEBUG: Could not find original symbol" << std::endl;
+            }
+        }
+        
+        // Try to dereference
+        try {
+            std::cout << "DEBUG: Attempting dereference..." << std::endl;
+            expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
+            
+            if(!is_nil_expr(deref_expr)) {
+                std::cout << "DEBUG: Dereference successful" << std::endl;
+                std::cout << "DEBUG: Dereferenced type ID: " << type_id_to_string(deref_expr->type->type_id) << std::endl;
+                std::string deref_value = from_expr(ns, "", deref_expr);
+                std::cout << "DEBUG: Dereferenced value: " << deref_value << std::endl;
+                
+                // If it's a struct type after dereferencing
+                if(is_struct_type(deref_expr->type)) {
+                    const struct_type2t& struct_type = to_struct_type(deref_expr->type);
+                    std::cout << "DEBUG: Found struct with " << struct_type.members.size() << " members" << std::endl;
+                    
+                    // Print member info
+                    for(size_t i = 0; i < struct_type.members.size(); i++) {
+                        std::cout << "DEBUG: Member " << i << ": " 
+                                 << id2string(struct_type.member_names[i])
+                                 << " (type: " << type_id_to_string(struct_type.members[i]->type_id) << ")" << std::endl;
+                    }
+                    
+                    return get_struct_values(ns, deref_expr, seen_addresses, depth + 1);
+                }
+                
+                // For non-struct types
+                return fmt::format("*({}) -> {}", orig_expr, deref_value);
+            } else {
+                std::cout << "DEBUG: Dereference resulted in nil expression" << std::endl;
+            }
+        } catch(const std::runtime_error& e) {
+            std::cout << "DEBUG: Dereference failed: " << e.what() << std::endl;
+        }
+        
+        // If all else fails
+        std::cout << "DEBUG: Falling back to pointer value" << std::endl;
+        return fmt::format("<ptr:{}>", orig_expr);
+    } catch(const std::runtime_error& e) {
+        std::cout << "DEBUG: Error in pointer analysis: " << e.what() << std::endl;
+        return "<error>";
+    }
 }
 
 
@@ -1000,6 +1016,7 @@ std::string get_array_values(const namespacet& ns, const expr2tc& expr, std::set
     return result;
 }
 
+
 std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
     if(depth > 20) return "<max-depth-reached>";
     
@@ -1007,15 +1024,16 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
         return "NULL";
     }
     
+    std::cout << "\nDEBUG: === Struct Analysis Start ===" << std::endl;
+    std::cout << "DEBUG: Type ID: " << type_id_to_string(expr->type->type_id) << std::endl;
+    
     try {
-        std::cout << "DEBUG: Processing struct with type: " << type_id_to_string(expr->type->type_id) << std::endl;
-        
-        if(expr->type->type_id == type2t::struct_id) {
+        if(is_struct_type(expr->type)) {
             const struct_type2t& struct_type = to_struct_type(expr->type);
             std::string type_name = id2string(struct_type.name);
             
-            std::cout << "DEBUG: Processing struct: " << type_name << " with " 
-                     << struct_type.members.size() << " members" << std::endl;
+            std::cout << "DEBUG: Found struct: " << type_name << std::endl;
+            std::cout << "DEBUG: Member count: " << struct_type.members.size() << std::endl;
             
             std::string result = fmt::format("{}{{", type_name);
             bool first = true;
@@ -1027,8 +1045,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
                 const irep_idt& component_name = struct_type.member_names[i];
                 const type2tc& member_type = struct_type.members[i];
                 
-                std::cout << "DEBUG: Processing member: " << id2string(component_name) 
-                         << " with type: " << type_id_to_string(member_type->type_id) << std::endl;
+                std::cout << "DEBUG: Processing member: " << id2string(component_name) << std::endl;
                 
                 try {
                     expr2tc member_expr = member2tc(member_type, expr, struct_type.member_names[i]);
@@ -1039,13 +1056,14 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
                     }
                     else if(is_array_type(member_type)) {
                         const array_type2t& arr_type = to_array_type(member_type);
-                        result += fmt::format("[type:{}, size:{}]", 
-                                            type_id_to_string(arr_type.subtype->type_id),
-                                            from_expr(ns, "", arr_type.array_size));
+                        std::string array_value = from_expr(ns, "", member_expr);
+                        result += fmt::format("[{}]", array_value);
                     }
                     else {
                         result += from_expr(ns, "", member_expr);
                     }
+                    
+                    std::cout << "DEBUG: Successfully processed member" << std::endl;
                 }
                 catch(const std::runtime_error& e) {
                     std::cout << "DEBUG: Error processing member: " << e.what() << std::endl;
@@ -1055,6 +1073,8 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::se
             result += "}";
             return result;
         }
+        
+        std::cout << "DEBUG: Not a struct type, returning raw expression" << std::endl;
         return from_expr(ns, "", expr);
     }
     catch(const std::runtime_error& e) {
