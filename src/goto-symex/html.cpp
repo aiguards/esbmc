@@ -1122,35 +1122,17 @@ json serialize_value(const namespacet& ns, const expr2tc& expr, std::set<std::st
     }
 
     try {
-        // For struct types
-        if(is_struct_type(expr->type)) {
-            const struct_type2t& struct_type = to_struct_type(expr->type);
-            
-            json struct_data = json::object();
-            struct_data["__type"] = id2string(struct_type.name);
-            
-            // Serialize each member
-            for(size_t i = 0; i < struct_type.members.size(); i++) {
-                const irep_idt& member_name = struct_type.member_names[i];
-                const type2tc& member_type = struct_type.members[i];
-                
-                try {
-                    expr2tc member_expr = member2tc(member_type, expr, struct_type.member_names[i]);
-                    struct_data[id2string(member_name)] = serialize_value(ns, member_expr, seen);
-                }
-                catch(const std::runtime_error&) {
-                    struct_data[id2string(member_name)] = nullptr;
-                }
-            }
-            return struct_data;
-        }
+        std::cout << "\nDEBUG: Serializing value of type: " << type_id_to_string(expr->type->type_id) << std::endl;
+        
         // For pointer types
-        else if(is_pointer_type(expr->type)) {
+        if(is_pointer_type(expr->type)) {
             const pointer_type2t& ptr_type = to_pointer_type(expr->type);
             std::string addr_str = from_expr(ns, "", expr);
+            std::cout << "DEBUG: Found pointer with address: " << addr_str << std::endl;
             
             // Check for circular references
             if(!seen.insert(addr_str).second) {
+                std::cout << "DEBUG: Detected circular reference at " << addr_str << std::endl;
                 return {
                     {"__type", "pointer"},
                     {"address", addr_str},
@@ -1158,6 +1140,62 @@ json serialize_value(const namespacet& ns, const expr2tc& expr, std::set<std::st
                 };
             }
             
+            // Try to get symbol information if this is a symbol
+            if(is_symbol2t(expr)) {
+                const symbol2t& sym = to_symbol2t(expr);
+                std::cout << "DEBUG: Symbol name: " << sym.thename << std::endl;
+                
+                // Try to look up original symbol
+                if(const symbolt* orig_symbol = ns.lookup(sym.thename)) {
+                    std::cout << "DEBUG: Found original symbol type: " << from_type(ns, "", orig_symbol->type) << std::endl;
+                    
+                    // Check for struct type in the pointed-to type
+                    if(orig_symbol->type.id() == "pointer") {
+                        const pointer_typet& ptr_type = to_pointer_type(orig_symbol->type);
+                        std::cout << "DEBUG: Pointed-to type: " << from_type(ns, "", ptr_type.subtype()) << std::endl;
+                        
+                        // If it points to a struct, try to get struct info
+                        if(ptr_type.subtype().id() == "struct") {
+                            std::cout << "DEBUG: Found struct type, attempting to get members" << std::endl;
+                            const struct_typet& struct_type = to_struct_type(ptr_type.subtype());
+                            
+                            json struct_data = json::object();
+                            struct_data["__type"] = "struct";
+                            struct_data["name"] = id2string(struct_type.name()); // Use name() instead of get_tag()
+                            struct_data["members"] = json::object();
+                            
+                            // Get components using componentt
+                            const struct_typet::componentst& components = struct_type.components();
+                            for(const auto& comp : components) {
+                                std::string member_name = id2string(comp.get_name());
+                                std::cout << "DEBUG: Processing member: " << member_name << std::endl;
+                                try {
+                                    // Create member access expression
+                                    expr2tc member_access = member2tc(
+                                        migrate_type(comp.type()),
+                                        dereference2tc(migrate_type(ptr_type.subtype()), expr),
+                                        comp.get_name()
+                                    );
+                                    
+                                    struct_data["members"][member_name] = 
+                                        serialize_value(ns, member_access, seen);
+                                } catch(const std::runtime_error& e) {
+                                    std::cout << "DEBUG: Error accessing member: " << e.what() << std::endl;
+                                    struct_data["members"][member_name] = nullptr;
+                                }
+                            }
+                            
+                            return {
+                                {"__type", "pointer"},
+                                {"address", addr_str},
+                                {"points_to", struct_data}
+                            };
+                        }
+                    }
+                }
+            }
+            
+            // Try normal dereference
             try {
                 expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
                 if(!is_nil_expr(deref_expr)) {
@@ -1167,7 +1205,9 @@ json serialize_value(const namespacet& ns, const expr2tc& expr, std::set<std::st
                         {"value", serialize_value(ns, deref_expr, seen)}
                     };
                 }
-            } catch(const std::runtime_error&) {}
+            } catch(const std::runtime_error& e) {
+                std::cout << "DEBUG: Dereference failed: " << e.what() << std::endl;
+            }
             
             return {
                 {"__type", "pointer"},
@@ -1175,41 +1215,42 @@ json serialize_value(const namespacet& ns, const expr2tc& expr, std::set<std::st
                 {"value", nullptr}
             };
         }
-        // For array types
-        else if(is_array_type(expr->type)) {
-            const array_type2t& arr_type = to_array_type(expr->type);
-            json array_data = json::array();
+        // For struct types
+        else if(is_struct_type(expr->type)) {
+            const struct_type2t& struct_type = to_struct_type(expr->type);
+            std::cout << "DEBUG: Processing struct: " << id2string(struct_type.name) << std::endl;
             
-            if(is_constant_int2t(arr_type.array_size)) {
-                const constant_int2t& size = to_constant_int2t(arr_type.array_size);
-                size_t arr_size = size.value.to_uint64();
+            json struct_data = json::object();
+            struct_data["__type"] = "struct";
+            struct_data["name"] = id2string(struct_type.name);
+            struct_data["members"] = json::object();
+            
+            for(size_t i = 0; i < struct_type.members.size(); i++) {
+                const irep_idt& member_name = struct_type.member_names[i];
+                std::cout << "DEBUG: Processing member: " << id2string(member_name) << std::endl;
                 
-                for(size_t i = 0; i < arr_size && i < 10; i++) {
-                    try {
-                        expr2tc index_expr = index2tc(
-                            arr_type.subtype,
-                            expr,
-                            constant_int2tc(index_type2(), i)
-                        );
-                        array_data.push_back(serialize_value(ns, index_expr, seen));
-                    }
-                    catch(const std::runtime_error&) {
-                        array_data.push_back(nullptr);
-                    }
+                try {
+                    expr2tc member_expr = member2tc(
+                        struct_type.members[i],
+                        expr,
+                        member_name
+                    );
+                    struct_data["members"][id2string(member_name)] = 
+                        serialize_value(ns, member_expr, seen);
+                } catch(const std::runtime_error& e) {
+                    std::cout << "DEBUG: Error processing member: " << e.what() << std::endl;
+                    struct_data["members"][id2string(member_name)] = nullptr;
                 }
             }
-            
-            return {
-                {"__type", "array"},
-                {"elements", array_data}
-            };
+            return struct_data;
         }
         // For primitive types
         else {
             return from_expr(ns, "", expr);
         }
     }
-    catch(const std::runtime_error&) {
+    catch(const std::runtime_error& e) {
+        std::cout << "DEBUG: Serialization error: " << e.what() << std::endl;
         return nullptr;
     }
 }
