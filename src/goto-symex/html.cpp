@@ -1,7 +1,6 @@
 #include "util/message.h"
 #include <fstream>
 #include <goto-symex/goto_trace.h>
-#include <goto-symex/uprintf.h>
 #include <ostream>
 #include <sstream>
 #include <unordered_map>
@@ -830,15 +829,43 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         return "null";
     }
 
-    // For pointer types, use uprintf to get the value
+    // For pointer types, try to dump struct info
     if(is_pointer_type(expr->type)) {
         const pointer_type2t& ptr_type = to_pointer_type(expr->type);
         std::cout << "DEBUG: Pointer analysis:\n";
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        char buf[1024];
-        uprintf("Pointer value: %p\n", expr.get());  // Direct uprintf call
+        if(is_struct_type(ptr_type.subtype)) {
+            const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
+            
+            // Try to get the actual struct pointer and dump it
+            try {
+                if(auto* ptr = expr.get()) {
+                    std::cout << "DEBUG: Struct info using __builtin_dump_struct:\n";
+                    
+                    // Define print function with varargs
+                    auto print_fn = [](const char* fmt, ...) {
+                        va_list args;
+                        va_start(args, fmt);
+                        vprintf(fmt, args);
+                        va_end(args);
+                    };
+                    
+                    struct RunPlanStep {
+                        char* client_id;
+                        char* device_type;
+                        char* duid;
+                        char* federated_identity;
+                        char* location_id;
+                        char* user_presence_exp;
+                    };
+                    __builtin_dump_struct((const RunPlanStep*)ptr, print_fn);
+                }
+            } catch(const std::exception& e) {
+                std::cout << "DEBUG: Exception during struct dump: " << e.what() << "\n";
+            }
+        }
         
         if(raw_val == "0" || raw_val == "NULL" || raw_val.empty()) {
             return "null";
