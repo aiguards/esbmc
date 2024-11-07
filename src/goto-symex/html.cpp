@@ -831,20 +831,19 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
 
     // For pointer types, try to dump struct info
     if(is_pointer_type(expr->type)) {
-        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
         std::cout << "DEBUG: Pointer analysis:\n";
         std::string raw_val = from_expr(ns, "", expr);
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
-        if(is_struct_type(ptr_type.subtype)) {
-            const struct_type2t& struct_type = to_struct_type(ptr_type.subtype);
+        if(is_struct_type(to_pointer_type(expr->type).subtype)) {
+            const struct_type2t& struct_type = to_struct_type(to_pointer_type(expr->type).subtype);
             
             // Try to get the actual struct pointer and dump it
             try {
-                void* ptr = expr.get();
-                std::cout << "DEBUG: Got pointer: " << ptr << "\n";
+                const expr2t* raw_ptr = expr.get();
+                std::cout << "DEBUG: Got pointer: " << raw_ptr << "\n";
                 
-                if(ptr && ptr != (void*)0 && ptr != (void*)-1) {
+                if(raw_ptr != nullptr) {
                     std::cout << "DEBUG: Attempting struct dump\n";
                     
                     // Define print function with varargs
@@ -870,8 +869,7 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                     std::cout << "DEBUG: About to call __builtin_dump_struct\n";
                     
                     // Try to safely cast and dump
-                    const RunPlanStep* safe_ptr = static_cast<const RunPlanStep*>(ptr);
-                    if(safe_ptr) {
+                    if(const RunPlanStep* safe_ptr = reinterpret_cast<const RunPlanStep*>(raw_ptr)) {
                         std::cout << "DEBUG: Safe cast successful\n";
                         __builtin_dump_struct(safe_ptr, print_fn);
                         std::cout << "DEBUG: Dump complete\n";
