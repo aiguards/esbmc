@@ -804,80 +804,116 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
     return headers;
 }
 
+void dump_type_details(const type2tc& type, int depth = 0) {
+    std::string indent(depth * 2, ' ');
+    
+    if(is_pointer_type(type)) {
+        const pointer_type2t& ptr = to_pointer_type(type);
+        std::cout << indent << "* ";  // Show pointer with *
+        dump_type_details(ptr.subtype, 0);  // Don't indent pointer types
+    }
+    else if(is_struct_type(type)) {
+        const struct_type2t& s = to_struct_type(type);
+        std::cout << indent << "struct {\n";
+        for(size_t i = 0; i < s.members.size(); i++) {
+            std::cout << indent << "  " << id2string(s.member_names[i]) << ": ";
+            dump_type_details(s.members[i], depth + 1);
+            std::cout << ";\n";
+        }
+        std::cout << indent << "}";
+    }
+    else if(is_array_type(type)) {
+        const array_type2t& arr = to_array_type(type);
+        dump_type_details(arr.subtype, 0);
+        std::cout << "[]";
+    }
+    else {
+        std::cout << get_type_id(type);
+    }
+}
+
 void print_expr_info(const std::string& context, const expr2tc& expr, const namespacet& ns) {
     std::cout << "\nDEBUG " << context << ":\n";
+    
+    // Skip if nil
     if(is_nil_expr(expr)) {
-        std::cout << "  - expr is_nil: 1\n";
+        std::cout << "  <nil>\n";
         return;
     }
 
-    std::cout << "  - expr is_nil: " << is_nil_expr(expr) << "\n";
+    // Get basic type info
+    std::cout << "  Type: ";
+    dump_type_details(expr->type);
+    std::cout << "\n";
     
-    // Dump the basic struct layout
-    auto print_fn = [](const char* fmt, ...) {
-        va_list args;
-        va_start(args, fmt);
-        std::cout << "DEBUG struct dump: ";
-        vprintf(fmt, args);
-        va_end(args);
-    };
-    
-    const expr2t* expr_ptr = expr.get();
-    if(expr_ptr) {
-        std::cout << "DEBUG: About to dump expr at " << expr_ptr << "\n";
-        __builtin_dump_struct(expr_ptr, print_fn);
+    // Get value based on type
+    std::cout << "  Value: ";
+    if(is_constant_int2t(expr)) {
+        std::cout << to_constant_int2t(expr).value;
+    }
+    else if(is_constant_string2t(expr)) {
+        std::cout << "\"" << to_constant_string2t(expr).value << "\"";
+    }
+    else if(is_symbol2t(expr)) {
+        const symbol2t& sym = to_symbol2t(expr);
+        std::cout << sym.thename;
         
-        // Try to get actual symbol info when it's a symbol
-        if(is_symbol2t(expr)) {
-            const symbol2t &sym = to_symbol2t(expr);
-            std::cout << "DEBUG: Symbol analysis:\n";
-            std::cout << "  - Symbol name: " << sym.thename << "\n";
-            std::cout << "  - Symbol type: " << get_type_id(sym.type) << "\n";
-            
-            // For struct types (like DeviceRecord), dump fields
-            if(is_struct_type(sym.type)) {
-                const struct_type2t &struct_type = to_struct_type(sym.type);
-                std::cout << "  - DeviceRecord fields:\n";
-                for(size_t i = 0; i < struct_type.members.size(); i++) {
-                    std::cout << "    Field " << i << ":\n";
-                    std::cout << "      Name: " << id2string(struct_type.member_names[i]) << "\n";
-                    std::cout << "      Type: " << get_type_id(struct_type.members[i]) << "\n";
-                    
-                    // Try to get field value through member2tc
-                    try {
-                        expr2tc member_expr = member2tc(
-                            struct_type.members[i],
-                            expr,
-                            struct_type.member_names[i]);
-                            
-                        std::cout << "      Raw value: " << from_expr(ns, "", member_expr) << "\n";
-                        std::cout << "      Value dump:\n";
-                        if(const expr2t* member_ptr = member_expr.get()) {
-                            __builtin_dump_struct(member_ptr, print_fn);
-                        }
-                    }
-                    catch(const std::exception& e) {
-                        std::cout << "      Failed to get value: " << e.what() << "\n";
-                    }
+        // For pointers to structs, try to show the fields
+        if(is_pointer_type(sym.type)) {
+            const pointer_type2t& ptr = to_pointer_type(sym.type);
+            if(is_struct_type(ptr.subtype)) {
+                const struct_type2t& s = to_struct_type(ptr.subtype);
+                std::cout << " (Points to struct with fields:";
+                for(size_t i = 0; i < s.members.size(); i++) {
+                    std::cout << "\n    " << id2string(s.member_names[i]) << ": ";
+                    dump_type_details(s.members[i]);
                 }
+                std::cout << "\n  )";
             }
         }
     }
-    
-    // Additional pointer analysis
-    if(is_pointer_type(expr->type)) {
-        std::cout << "DEBUG: Pointer analysis:\n";
-        std::string raw_val = from_expr(ns, "", expr); 
-        std::cout << "Raw pointer value: " << raw_val << "\n";
+    else {
+        std::cout << from_expr(ns, "", expr);
+    }
+    std::cout << "\n";
 
-        const pointer_type2t& ptr = to_pointer_type(expr->type);
-        if(is_struct_type(ptr.subtype)) {
-            const struct_type2t& s = to_struct_type(ptr.subtype);
-            std::cout << "  - struct fields: " << s.members.size() << "\n";
-            for(size_t i = 0; i < s.members.size(); i++) {
-                std::cout << "    - " << id2string(s.member_names[i]) << "\n";
+    // For assignments, try to show what values are being set
+    if(expr->expr_id == expr2t::expr_ids::constant_array_id) {
+        std::cout << "  Array contents:\n";
+        const constant_array2t& arr = to_constant_array2t(expr);
+        
+        // Just dump the whole array object to see its structure
+        auto print_fn = [](const char* fmt, ...) {
+            va_list args;
+            va_start(args, fmt);
+            std::cout << "DEBUG array dump: ";
+            vprintf(fmt, args);
+            va_end(args);
+        };
+        
+        std::cout << "DEBUG: About to dump array at " << &arr << "\n";
+        __builtin_dump_struct(&arr, print_fn);
+    }
+
+    // For struct assignments or dereferences, try to show field values
+    if(is_pointer_type(expr->type)) {
+        try {
+            expr2tc deref = dereference2tc(expr->type, expr);
+            if(!is_nil_expr(deref) && is_struct_type(deref->type)) {
+                const struct_type2t& s = to_struct_type(deref->type);
+                std::cout << "  Dereferenced fields:\n";
+                for(size_t i = 0; i < s.members.size(); i++) {
+                    expr2tc field = member2tc(s.members[i], deref, s.member_names[i]);
+                    std::cout << "    " << id2string(s.member_names[i]) << " = ";
+                    if(!is_nil_expr(field)) {
+                        std::cout << from_expr(ns, "", field);
+                    } else {
+                        std::cout << "<nil>";
+                    }
+                    std::cout << "\n";
+                }
             }
-        }
+        } catch(...) {}
     }
 }
 
