@@ -25,19 +25,19 @@
 #include <util/mp_arith.h>
 #include <memory>
 #include <irep2/irep2_type.h>
-#include <boost/pfr.hpp>
+// #include <boost/pfr.hpp>
 // #include <boost/pfr/precise/core.hpp>
 
-template<typename T>
-void print_struct_fields(const T& obj, const std::string& prefix = "") {
-    try {
-        boost::pfr::for_each_field(obj, [&prefix](const auto& field, std::size_t idx) {
-            std::cout << prefix << "field " << idx << ": " << field << '\n';
-        });
-    } catch(const std::exception& e) {
-        std::cout << prefix << "Failed to print struct fields: " << e.what() << '\n';
-    }
-}
+// template<typename T>
+// void print_struct_fields(const T& obj, const std::string& prefix = "") {
+//     try {
+//         boost::pfr::for_each_field(obj, [&prefix](const auto& field, std::size_t idx) {
+//             std::cout << prefix << "field " << idx << ": " << field << '\n';
+//         });
+//     } catch(const std::exception& e) {
+//         std::cout << prefix << "Failed to print struct fields: " << e.what() << '\n';
+//     }
+// }
 
 // Helper for ESBMC expr inspection using PFR when possible
 // void inspect_expr_pfr(const expr2tc& expr, const namespacet& ns) {
