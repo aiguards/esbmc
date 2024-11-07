@@ -1047,6 +1047,55 @@ std::string get_assignment_message(const namespacet& ns,
     return msg;
 }
 
+void track_variable_state(const goto_tracet &trace, const namespacet &ns) {
+    std::cout << "\nDEBUG Tracking variable states:\n";
+    
+    // Track all assignments and their values
+    for(const auto &step : trace.steps) {
+        if(!step.is_assignment())
+            continue;
+            
+        std::cout << "\nDEBUG Assignment step:\n";
+        
+        // Get assignment info
+        std::string lhs_str = from_expr(ns, "", step.lhs);
+        std::string value_str = from_expr(ns, "", step.value);
+        
+        std::cout << "  LHS: " << lhs_str << "\n";
+        std::cout << "  Value: " << value_str << "\n";
+        
+        // Special handling for struct field assignments
+        if(lhs_str.find("device.") != std::string::npos) {
+            std::cout << "  DEVICE FIELD UPDATE:\n";
+            std::cout << "    Field: " << lhs_str.substr(lhs_str.find("device.") + 7) << "\n";
+            std::cout << "    New Value: " << value_str << "\n";
+            
+            // Try to get the full device state at this point
+            if(const expr2t* value_ptr = step.value.get()) {
+                std::cout << "    Current Device State:\n";
+                if(is_struct_type(step.value->type)) {
+                    const struct_type2t& s = to_struct_type(step.value->type);
+                    for(size_t i = 0; i < s.members.size(); i++) {
+                        try {
+                            expr2tc field_expr = member2tc(
+                                s.members[i],
+                                step.value,
+                                s.member_names[i]);
+                                
+                            std::string field_value = from_expr(ns, "", field_expr);
+                            std::cout << "      " << id2string(s.member_names[i]) 
+                                     << ": " << field_value << "\n";
+                        } catch(...) {
+                            std::cout << "      " << id2string(s.member_names[i]) 
+                                     << ": <error getting value>\n";
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
     json test_entry;
     test_entry["steps"] = json::array();
@@ -1066,6 +1115,9 @@ void add_coverage_to_json(const goto_tracet &goto_trace, const namespacet &ns) {
     
     size_t step_count = 0;
     bool found_violation = false;
+
+    track_variable_state(goto_trace, ns);
+
 
     // First pass - collect referenced files
     for(const auto &step : goto_trace.steps) {
