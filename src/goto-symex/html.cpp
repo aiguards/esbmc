@@ -845,7 +845,6 @@ std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr,
     if(depth > 20) return "<max-depth-reached>";
 
     if(is_nil_expr(expr)) {
-        std::cout << "DEBUG: Nil pointer expression" << std::endl;
         return "NULL";
     }
 
@@ -857,34 +856,46 @@ std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr,
         std::cout << "DEBUG: Pointer subtype ID: " << ptr_type.subtype->type_id << std::endl;
         
         // Get raw type information
-        std::cout << "DEBUG: Raw pointer type: " << from_type(ns, "", expr->type) << std::endl;
-        std::cout << "DEBUG: Raw subtype: " << from_type(ns, "", ptr_type.subtype) << std::endl;
+        std::string raw_type = from_type(ns, "", expr->type);
+        std::string raw_subtype = from_type(ns, "", ptr_type.subtype);
+        std::cout << "DEBUG: Raw pointer type: " << raw_type << std::endl;
+        std::cout << "DEBUG: Raw subtype: " << raw_subtype << std::endl;
 
-        // Try to get pointed-to value
+        // Get the pointer address/expression
         std::string addr_str = from_expr(ns, "", expr);
         std::cout << "DEBUG: Pointer address string: " << addr_str << std::endl;
 
-        // Try to create dereference expression
+        // Try to dereference
         try {
+            // Even for void*, try to dereference and let ESBMC handle the type
             expr2tc deref_expr = dereference2tc(ptr_type.subtype, expr);
             std::cout << "DEBUG: Successfully created dereference expression" << std::endl;
             std::cout << "DEBUG: Dereferenced type ID: " << deref_expr->type->type_id << std::endl;
             
-            // Try to get dereferenced value
-            try {
-                std::string value = from_expr(ns, "", deref_expr);
-                std::cout << "DEBUG: Dereferenced value: " << value << std::endl;
-                return fmt::format("*({}) -> {}", addr_str, value);
-            }
-            catch(const std::runtime_error& e) {
-                std::cout << "DEBUG: Failed to get dereferenced value: " << e.what() << std::endl;
+            // If dereference succeeded, check what we got
+            if(!is_nil_expr(deref_expr)) {
+                // Try to get actual contents
+                std::string value;
+                try {
+                    // If it's a struct after dereferencing, process it as such
+                    if(is_struct_type(deref_expr->type)) {
+                        std::cout << "DEBUG: Dereferenced to struct type" << std::endl;
+                        value = get_struct_values(ns, deref_expr, seen_addresses, depth + 1);
+                    } else {
+                        value = from_expr(ns, "", deref_expr);
+                    }
+                    std::cout << "DEBUG: Dereferenced value: " << value << std::endl;
+                    return fmt::format("*({}) -> {}", addr_str, value);
+                } catch(const std::runtime_error& e) {
+                    std::cout << "DEBUG: Error getting dereferenced value: " << e.what() << std::endl;
+                }
             }
         }
         catch(const std::runtime_error& e) {
-            std::cout << "DEBUG: Failed to create dereference expression: " << e.what() << std::endl;
+            std::cout << "DEBUG: Dereference failed: " << e.what() << std::endl;
         }
 
-        // If we can't dereference, at least show the pointer value
+        // If we get here, show the pointer value at least
         return fmt::format("<ptr:{}>", addr_str);
     }
     catch(const std::runtime_error& e) {
