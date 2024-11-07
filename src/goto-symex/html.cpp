@@ -800,76 +800,284 @@ std::set<std::string> find_included_headers(const std::string& file_path, std::s
     return headers;
 }
 
-std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
-    std::string result;
+// Forward declarations
+std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth = 0);
+std::string get_array_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth);
+
+// Helper to get type name
+std::string get_type_name(const type2tc& type) {
+    if(is_struct_type(type)) {
+        const struct_type2t& struct_type = to_struct_type(type);
+        return id2string(struct_type.name);
+    }
+    else if(is_pointer_type(type)) {
+        return "ptr";
+    }
+    else if(is_array_type(type)) {
+        return "array";
+    }
+    else if(is_bool_type(type)) {
+        return "bool";
+    }
+    else if(is_code_type(type)) {
+        return "function";
+    }
+    else if(is_union_type(type)) {
+        return "union";
+    }
+    else if(is_fixedbv_type(type)) {
+        return "float";
+    }
+    else if(is_unsignedbv_type(type)) {
+        return "unsigned int";
+    }
+    else if(is_signedbv_type(type)) {
+        return "int";
+    }
+    return "unknown";  // fallback
+}
+
+std::string get_pointer_target_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
+    if(depth > 20) { // Prevent extremely deep recursion
+        return "<max-depth-reached>";
+    }
+
+    // Handle null/invalid pointers
+    if(is_nil_expr(expr)) {
+        return "NULL";
+    }
+
+    // Get the actual pointer value/address
+    std::string addr_str = from_expr(ns, "", expr);
     
-    // Handle null pointers
+    // If it's a pointer dereference
+    if(is_dereference2t(expr)) {
+        const dereference2t& deref = to_dereference2t(expr);
+        
+        // Check if we've seen this address before
+        if(seen_addresses.find(addr_str) != seen_addresses.end()) {
+            return fmt::format("<circular-ref:{}>", addr_str);
+        }
+        seen_addresses.insert(addr_str);
+        
+        try {
+            // Get pointed-to value
+            return fmt::format("*({}) -> {}", 
+                addr_str,
+                get_struct_values(ns, deref.value, seen_addresses, depth + 1));
+        } catch(const std::runtime_error&) {
+            return fmt::format("<invalid-deref:{}>", addr_str);
+        }
+    }
+    
+    // If it's an address-of operation
+    if(is_address_of2t(expr)) {
+        const address_of2t& addr = to_address_of2t(expr);
+        
+        if(seen_addresses.find(addr_str) != seen_addresses.end()) {
+            return fmt::format("<circular-ref:{}>", addr_str);
+        }
+        seen_addresses.insert(addr_str);
+        
+        try {
+            return fmt::format("&({}) -> {}", 
+                addr_str,
+                get_struct_values(ns, addr.ptr_obj, seen_addresses, depth + 1));
+        } catch(const std::runtime_error&) {
+            return fmt::format("<invalid-addr:{}>", addr_str);
+        }
+    }
+
+    // Handle pointer to array
+    if(is_pointer_type(expr->type)) {
+        const pointer_type2t& ptr_type = to_pointer_type(expr->type);
+        if(is_array_type(ptr_type.subtype)) {
+            try {
+                expr2tc deref = dereference2tc(ptr_type.subtype, expr);
+                return get_array_values(ns, deref, seen_addresses, depth);
+            } catch(const std::runtime_error&) {
+                return fmt::format("<invalid-array-ptr:{}>", addr_str);
+            }
+        }
+    }
+
+    // For other pointer types, try to get the value
+    try {
+        return fmt::format("ptr({}) -> {}", 
+            addr_str,
+            from_expr(ns, "", expr));
+    } catch(const std::runtime_error&) {
+        return fmt::format("<ptr:{}>", addr_str);
+    }
+}
+
+std::string get_array_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
+    if(depth > 20) return "<max-depth-reached>";
+
+    const array_type2t& arr_type = to_array_type(expr->type);
+    std::string result = fmt::format("{}[", get_type_name(arr_type.subtype));
+    
+    // Try to get array size using is_constant_int2t
+    size_t arr_size = 0;
+    if(is_constant_int2t(arr_type.array_size)) {
+        const constant_int2t& size = to_constant_int2t(arr_type.array_size);
+        arr_size = size.value.to_uint64(); // Use to_uint64() instead of to_long()
+    }
+    
+    // Handle fixed size arrays
+    if(arr_size > 0) {
+        for(size_t i = 0; i < arr_size; i++) {
+            if(i > 0) result += ", ";
+            
+            try {
+                expr2tc index_expr = index2tc(
+                    arr_type.subtype,
+                    expr,
+                    constant_int2tc(index_type2(), i)
+                );
+                
+                // Handle different element types
+                if(is_pointer_type(arr_type.subtype)) {
+                    result += get_pointer_target_values(ns, index_expr, seen_addresses, depth + 1);
+                }
+                else if(is_array_type(arr_type.subtype)) {
+                    result += get_array_values(ns, index_expr, seen_addresses, depth + 1);
+                }
+                else if(is_struct_type(arr_type.subtype)) {
+                    result += get_struct_values(ns, index_expr, seen_addresses, depth + 1);
+                }
+                else {
+                    result += from_expr(ns, "", index_expr);
+                }
+            }
+            catch(const std::runtime_error&) {
+                result += "<error>";
+            }
+            
+            // Limit large arrays
+            if(i >= 9 && arr_size > 10) {
+                result += fmt::format(", ... {} more elements", arr_size - i - 1);
+                break;
+            }
+        }
+    }
+    // Handle dynamic arrays
+    else if(!is_nil_expr(arr_type.array_size)) {
+        result += fmt::format("<dynamic-size:{}>", from_expr(ns, "", arr_type.array_size));
+    }
+    else {
+        result += "<unknown-size>";
+    }
+    
+    result += "]";
+    return result;
+}
+
+std::string get_struct_values(const namespacet& ns, const expr2tc& expr, std::set<std::string>& seen_addresses, int depth) {
+    if(depth > 20) return "<max-depth-reached>";
+    
     if(is_nil_expr(expr)) {
         return "NULL";
     }
     
-    // If it's a struct
-    if(is_struct_type(expr->type)) {
-        const struct_type2t& struct_type = to_struct_type(expr->type);
-        
-        result += "{";
-        bool first = true;
-        
-        // Iterate through struct members
-        for(size_t i = 0; i < struct_type.members.size(); i++) {
-            if(!first) result += ", ";
-            first = false;
+    try {
+        // Handle different types
+        if(is_struct_type(expr->type)) {
+            const struct_type2t& struct_type = to_struct_type(expr->type);
+            std::string type_name = id2string(struct_type.name);
             
-            // Convert dstring to std::string using id2string
-            const irep_idt& component_name = struct_type.member_names[i];
-            const type2tc& member_type = struct_type.members[i];
+            std::string result = fmt::format("{}{{", type_name);
+            bool first = true;
             
-            result += id2string(component_name) + ": ";
-            
-            try {
-                // Create member expression
-                expr2tc member_expr = member2tc(
-                    member_type,
-                    expr,
-                    struct_type.member_names[i]
-                );
+            for(size_t i = 0; i < struct_type.members.size(); i++) {
+                if(!first) result += ", ";
+                first = false;
                 
-                // Recursively handle nested structs
-                if(is_struct_type(member_type)) {
-                    result += get_struct_values(ns, member_expr);
+                const irep_idt& component_name = struct_type.member_names[i];
+                const type2tc& member_type = struct_type.members[i];
+                
+                result += fmt::format("{}: ", id2string(component_name));
+                
+                try {
+                    expr2tc member_expr = member2tc(
+                        member_type,
+                        expr,
+                        struct_type.member_names[i]
+                    );
+                    
+                    // Handle different member types
+                    if(is_pointer_type(member_type)) {
+                        result += get_pointer_target_values(ns, member_expr, seen_addresses, depth + 1);
+                    }
+                    else if(is_array_type(member_type)) {
+                        result += get_array_values(ns, member_expr, seen_addresses, depth + 1);
+                    }
+                    else if(is_struct_type(member_type)) {
+                        result += get_struct_values(ns, member_expr, seen_addresses, depth + 1);
+                    }
+                    else if(is_union_type(member_type)) {
+                        // Handle unions - show all possible members
+                        const union_type2t& union_type = to_union_type(member_type);
+                        result += "union{";
+                        for(size_t j = 0; j < union_type.members.size(); j++) {
+                            if(j > 0) result += " | ";
+                            result += fmt::format("{}: {}", 
+                                id2string(union_type.member_names[j]),
+                                get_type_name(union_type.members[j]));
+                        }
+                        result += "}";
+                    }
+                    else if(is_code_type(member_type)) {
+                        result += "<function>";
+                    }
+                    else if(is_bool_type(member_type)) {
+                        result += from_expr(ns, "", member_expr) == "1" ? "true" : "false";
+                    }
+                    else {
+                        // Handle primitive types
+                        result += from_expr(ns, "", member_expr);
+                    }
                 }
-                // Handle primitive types
-                else if(is_number_type(member_type) || 
-                        is_bool_type(member_type)) {
-                    result += from_expr(ns, "", member_expr);
-                }
-                // Handle arrays and strings
-                else if(is_array_type(member_type)) {
-                    result += "\"" + from_expr(ns, "", member_expr) + "\"";
-                }
-                else {
-                    // For other types, just use regular expression conversion 
-                    result += from_expr(ns, "", member_expr);
+                catch(const std::runtime_error&) {
+                    result += "<error>";
                 }
             }
-            catch(const std::runtime_error& e) {
-                result += "<error>";
-                continue;
-            }
+            result += "}";
+            return result;
         }
-        result += "}";
+        else if(is_pointer_type(expr->type)) {
+            return get_pointer_target_values(ns, expr, seen_addresses, depth);
+        }
+        else if(is_array_type(expr->type)) {
+            return get_array_values(ns, expr, seen_addresses, depth);
+        }
+        else if(is_union_type(expr->type)) {
+            const union_type2t& union_type = to_union_type(expr->type);
+            std::string result = "union{";
+            for(size_t i = 0; i < union_type.members.size(); i++) {
+                if(i > 0) result += " | ";
+                result += fmt::format("{}: {}", 
+                    id2string(union_type.member_names[i]),
+                    get_type_name(union_type.members[i]));
+            }
+            result += "}";
+            return result;
+        }
+        else {
+            return from_expr(ns, "", expr);
+        }
     }
-    // Handle primitive types directly
-    else if(is_number_type(expr->type) || is_bool_type(expr->type)) {
-        result = from_expr(ns, "", expr);
+    catch(const std::runtime_error& e) {
+        return fmt::format("<error:{}>", e.what());
     }
-    // For other types, use default conversion
-    else {
-        result = from_expr(ns, "", expr);
-    }
-    
-    return result;
 }
+
+// Public entry point
+std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
+    std::set<std::string> seen_addresses;
+    return get_struct_values(ns, expr, seen_addresses, 0);
+}
+
 
 // Helper function to get assignment message
 std::string get_assignment_message(const namespacet& ns, 
