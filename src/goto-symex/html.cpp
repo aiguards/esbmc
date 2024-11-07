@@ -27,6 +27,12 @@
 #include <irep2/irep2_type.h>
 #include <libdwarf/libdwarf.h>
 #include <libdwarf/dwarf.h>
+#include <fcntl.h>       // For O_RDONLY
+#include <sys/mman.h>    // For mmap, PROT_READ, MAP_PRIVATE, etc.
+#include <unistd.h>      // For close
+#include <sys/types.h>   // For off_t
+#include <cstring>       // For memcpy
+
 // #include <boost/pfr.hpp>
 // #include <boost/pfr/precise/core.hpp>
 
@@ -100,129 +106,214 @@
 //     }
 // }
 
-struct PointerInspector {
+class DwarfInspector {
+private:
     Dwarf_Debug dbg;
-    Dwarf_Die cu_die;
-    
-    void inspect_memory(void* ptr, size_t size) {
-        // Map process memory
-        char path[256];
-        snprintf(path, sizeof(path), "/proc/self/mem");
-        int fd = open(path, O_RDONLY);
-        if(fd < 0) return;
+    Dwarf_Error error;
+    int fd;
 
-        void* mapped = mmap(nullptr, size, PROT_READ, MAP_PRIVATE, fd, (off_t)ptr);
-        if(mapped == MAP_FAILED) {
+public:
+    DwarfInspector(const char* filename) : dbg(nullptr), error(nullptr), fd(-1) {
+        fd = open(filename, O_RDONLY);
+        if (fd < 0) {
+            throw std::runtime_error("Failed to open file");
+        }
+
+        if (dwarf_init(fd, DW_DLC_READ, nullptr, nullptr, &dbg, &error) != DW_DLV_OK) {
             close(fd);
+            throw std::runtime_error("Failed to initialize DWARF");
+        }
+    }
+
+    ~DwarfInspector() {
+        if (dbg) {
+            dwarf_finish(dbg, &error);
+        }
+        if (fd >= 0) {
+            close(fd);
+        }
+    }
+
+    void inspect_memory(void* ptr, size_t size) {
+        Dwarf_Die cu_die = nullptr;
+        Dwarf_Unsigned next_cu_header;
+
+        // Iterate through compilation units
+        while (dwarf_next_cu_header(dbg, nullptr, nullptr, nullptr, nullptr,
+                                  &next_cu_header, &error) == DW_DLV_OK) {
+            if (dwarf_siblingof(dbg, nullptr, &cu_die, &error) == DW_DLV_OK) {
+                inspect_die_tree(cu_die, ptr, size);
+                dwarf_dealloc(dbg, cu_die, DW_DLA_DIE);
+            }
+        }
+    }
+
+private:
+    void inspect_die_tree(Dwarf_Die die, void* ptr, size_t size) {
+        Dwarf_Half tag;
+        if (dwarf_tag(die, &tag, &error) != DW_DLV_OK) {
             return;
         }
 
-        // Get type info from DWARF
-        Dwarf_Die type_die;
-        Dwarf_Attribute type_attr;
-        if(dwarf_attr(cu_die, DW_AT_type, &type_attr, nullptr) == DW_DLV_OK) {
-            Dwarf_Off type_offset;
-            if(dwarf_global_formref(type_attr, &type_offset, nullptr) == DW_DLV_OK) {
-                if(dwarf_offdie(dbg, type_offset, &type_die, nullptr) == DW_DLV_OK) {
-                    print_type_contents(mapped, type_die);
-                }
-            }
+        // Print DIE information
+        print_die_info(die, tag, ptr, size);
+
+        // Check for children
+        Dwarf_Die child = nullptr;
+        if (dwarf_child(die, &child, &error) == DW_DLV_OK) {
+            inspect_die_tree(child, ptr, size);
+            dwarf_dealloc(dbg, child, DW_DLA_DIE);
         }
 
-        munmap(mapped, size);
-        close(fd);
+        // Check for siblings
+        Dwarf_Die sibling = nullptr;
+        if (dwarf_siblingof(dbg, die, &sibling, &error) == DW_DLV_OK) {
+            inspect_die_tree(sibling, ptr, size);
+            dwarf_dealloc(dbg, sibling, DW_DLA_DIE);
+        }
     }
 
-    void print_type_contents(void* addr, Dwarf_Die type_die) {
-        Dwarf_Half tag;
-        if(dwarf_tag(type_die, &tag, nullptr) != DW_DLV_OK) return;
+    void print_die_info(Dwarf_Die die, Dwarf_Half tag, void* ptr, size_t size) {
+        char* die_name = nullptr;
+        if (dwarf_diename(die, &die_name, &error) == DW_DLV_OK) {
+            std::cout << "DIE Name: " << die_name << "\n";
+            dwarf_dealloc(dbg, die_name, DW_DLA_STRING);
+        }
 
-        switch(tag) {
+        // Handle different types of DIEs
+        switch (tag) {
             case DW_TAG_base_type:
-                print_base_type(addr, type_die);
-                break;
-            case DW_TAG_pointer_type:
-                print_pointer_type(addr, type_die);
+                print_base_type(die, ptr);
                 break;
             case DW_TAG_structure_type:
-                print_struct_type(addr, type_die);
+                print_struct_type(die, ptr);
+                break;
+            case DW_TAG_pointer_type:
+                print_pointer_type(die, ptr);
                 break;
             case DW_TAG_array_type:
-                print_array_type(addr, type_die);
+                print_array_type(die, ptr);
                 break;
         }
     }
 
-    void print_struct_type(void* addr, Dwarf_Die struct_die) {
-        Dwarf_Die child;
-        if(dwarf_child(struct_die, &child, nullptr) == DW_DLV_OK) {
+    void print_base_type(Dwarf_Die die, void* ptr) {
+        Dwarf_Unsigned size;
+        if (dwarf_bytesize(die, &size, &error) == DW_DLV_OK) {
+            std::cout << "Base Type Size: " << size << " bytes\n";
+            
+            // Print value based on size
+            switch(size) {
+                case 1: // char
+                    std::cout << "Value: " << *(char*)ptr << "\n";
+                    break;
+                case 4: // int
+                    std::cout << "Value: " << *(int*)ptr << "\n";
+                    break;
+                case 8: // long
+                    std::cout << "Value: " << *(long*)ptr << "\n";
+                    break;
+            }
+        }
+    }
+
+    void print_struct_type(Dwarf_Die die, void* ptr) {
+        Dwarf_Unsigned size;
+        if (dwarf_bytesize(die, &size, &error) == DW_DLV_OK) {
+            std::cout << "Struct Size: " << size << " bytes\n";
+        }
+
+        // Print member information
+        Dwarf_Die child = nullptr;
+        if (dwarf_child(die, &child, &error) == DW_DLV_OK) {
             do {
-                Dwarf_Half tag;
-                if(dwarf_tag(child, &tag, nullptr) == DW_DLV_OK) {
-                    if(tag == DW_TAG_member) {
-                        Dwarf_Attribute offset_attr;
-                        if(dwarf_attr(child, DW_AT_data_member_location, 
-                                    &offset_attr, nullptr) == DW_DLV_OK) {
-                            Dwarf_Unsigned offset;
-                            if(dwarf_formudata(offset_attr, &offset, nullptr) == DW_DLV_OK) {
-                                char* name;
-                                if(dwarf_diename(child, &name, nullptr) == DW_DLV_OK) {
-                                    void* member_addr = (char*)addr + offset;
-                                    Dwarf_Die member_type;
-                                    if(get_type_die(child, &member_type)) {
-                                        std::cout << "Member " << name << ": ";
-                                        print_type_contents(member_addr, member_type);
-                                        std::cout << "\n";
-                                    }
-                                    dwarf_dealloc(dbg, name, DW_DLA_STRING);
-                                }
-                            }
-                        }
+                Dwarf_Half child_tag;
+                if (dwarf_tag(child, &child_tag, &error) == DW_DLV_OK) {
+                    if (child_tag == DW_TAG_member) {
+                        print_member_info(child, ptr);
                     }
                 }
-            } while(dwarf_siblingof(dbg, child, &child, nullptr) == DW_DLV_OK);
+            } while (dwarf_siblingof(dbg, child, &child, &error) == DW_DLV_OK);
+            dwarf_dealloc(dbg, child, DW_DLA_DIE);
         }
     }
 
-    void print_pointer_type(void* addr, Dwarf_Die type_die) {
-        void* pointed_addr = *(void**)addr;
-        if(pointed_addr) {
-            Dwarf_Die target_type;
-            if(get_type_die(type_die, &target_type)) {
-                print_type_contents(pointed_addr, target_type);
+    void print_member_info(Dwarf_Die member_die, void* struct_ptr) {
+        char* member_name = nullptr;
+        if (dwarf_diename(member_die, &member_name, &error) == DW_DLV_OK) {
+            std::cout << "Member: " << member_name << "\n";
+            
+            // Get member location
+            Dwarf_Attribute loc_attr;
+            if (dwarf_attr(member_die, DW_AT_data_member_location, &loc_attr, &error) == DW_DLV_OK) {
+                Dwarf_Unsigned offset;
+                if (dwarf_formudata(loc_attr, &offset, &error) == DW_DLV_OK) {
+                    void* member_ptr = (char*)struct_ptr + offset;
+                    
+                    // Get member type and print its value
+                    Dwarf_Die type_die;
+                    if (get_type_die(member_die, &type_die)) {
+                        print_die_info(type_die, DW_TAG_base_type, member_ptr, 0);
+                        dwarf_dealloc(dbg, type_die, DW_DLA_DIE);
+                    }
+                }
+                dwarf_dealloc(dbg, loc_attr, DW_DLA_ATTR);
             }
-        } else {
-            std::cout << "NULL";
+            dwarf_dealloc(dbg, member_name, DW_DLA_STRING);
         }
     }
 
-    void print_array_type(void* addr, Dwarf_Die type_die) {
-        Dwarf_Die element_type;
-        if(get_type_die(type_die, &element_type)) {
-            Dwarf_Attribute size_attr;
-            if(dwarf_attr(type_die, DW_AT_count, &size_attr, nullptr) == DW_DLV_OK) {
-                Dwarf_Unsigned count;
-                if(dwarf_formudata(size_attr, &count, nullptr) == DW_DLV_OK) {
-                    Dwarf_Unsigned elem_size;
-                    if(dwarf_bytesize(element_type, &elem_size, nullptr) == DW_DLV_OK) {
-                        for(Dwarf_Unsigned i = 0; i < count; i++) {
-                            void* elem_addr = (char*)addr + (i * elem_size);
-                            print_type_contents(elem_addr, element_type);
-                            if(i < count - 1) std::cout << ", ";
+    void print_pointer_type(Dwarf_Die die, void* ptr) {
+        void* pointed_value = *(void**)ptr;
+        std::cout << "Pointer Value: " << pointed_value << "\n";
+
+        if (pointed_value != nullptr) {
+            // Get type of pointed-to data
+            Dwarf_Die type_die;
+            if (get_type_die(die, &type_die)) {
+                print_die_info(type_die, DW_TAG_base_type, pointed_value, 0);
+                dwarf_dealloc(dbg, type_die, DW_DLA_DIE);
+            }
+        }
+    }
+
+    void print_array_type(Dwarf_Die die, void* ptr) {
+        Dwarf_Die type_die;
+        if (get_type_die(die, &type_die)) {
+            Dwarf_Unsigned elem_size;
+            if (dwarf_bytesize(type_die, &elem_size, &error) == DW_DLV_OK) {
+                // Try to get array size
+                Dwarf_Attribute size_attr;
+                if (dwarf_attr(die, DW_AT_count, &size_attr, &error) == DW_DLV_OK) {
+                    Dwarf_Unsigned count;
+                    if (dwarf_formudata(size_attr, &count, &error) == DW_DLV_OK) {
+                        std::cout << "Array Size: " << count << " elements\n";
+                        
+                        // Print each element
+                        for (Dwarf_Unsigned i = 0; i < count; i++) {
+                            void* elem_ptr = (char*)ptr + (i * elem_size);
+                            std::cout << "Element " << i << ": ";
+                            print_die_info(type_die, DW_TAG_base_type, elem_ptr, 0);
                         }
                     }
+                    dwarf_dealloc(dbg, size_attr, DW_DLA_ATTR);
                 }
             }
+            dwarf_dealloc(dbg, type_die, DW_DLA_DIE);
         }
     }
 
     bool get_type_die(Dwarf_Die die, Dwarf_Die* type_die) {
         Dwarf_Attribute type_attr;
-        if(dwarf_attr(die, DW_AT_type, &type_attr, nullptr) == DW_DLV_OK) {
+        if (dwarf_attr(die, DW_AT_type, &type_attr, &error) == DW_DLV_OK) {
             Dwarf_Off type_offset;
-            if(dwarf_global_formref(type_attr, &type_offset, nullptr) == DW_DLV_OK) {
-                return dwarf_offdie(dbg, type_offset, type_die, nullptr) == DW_DLV_OK;
+            if (dwarf_global_formref(type_attr, &type_offset, &error) == DW_DLV_OK) {
+                if (dwarf_offdie(dbg, type_offset, type_die, &error) == DW_DLV_OK) {
+                    dwarf_dealloc(dbg, type_attr, DW_DLA_ATTR);
+                    return true;
+                }
             }
+            dwarf_dealloc(dbg, type_attr, DW_DLA_ATTR);
         }
         return false;
     }
@@ -1109,24 +1200,23 @@ void print_expr_info(const std::string& context, const expr2tc& expr, const name
     }
 }
 
-// Usage with ESBMC:
+// Function to use with ESBMC
 void inspect_device_memory(const expr2tc& expr, const namespacet& ns) {
     if(is_pointer_type(expr->type)) {
         try {
-            // Get actual memory address from expr
-            void* ptr_addr = nullptr;
             if(is_symbol2t(expr)) {
                 const symbol2t& sym = to_symbol2t(expr);
-                // Get symbol's address from ESBMC's runtime
-                // This part depends on how ESBMC represents actual memory
-                ptr_addr = get_symbol_address(sym.thename);
-            }
-            
-            if(ptr_addr) {
-                PointerInspector inspector;
-                // Initialize DWARF debug info
-                // This would need proper initialization based on the binary
-                inspector.inspect_memory(ptr_addr, sizeof(void*));
+                
+                // Get the binary path - this needs to be implemented
+                const char* binary_path = get_binary_path();  // You need to implement this
+                
+                DwarfInspector inspector(binary_path);
+                
+                // Get the actual memory address - this needs to be implemented
+                void* ptr = nullptr;  // You need to implement getting the actual pointer
+                size_t size = sizeof(void*);
+                
+                inspector.inspect_memory(ptr, size);
             }
         } catch(const std::exception& e) {
             std::cout << "Memory inspection failed: " << e.what() << "\n";
