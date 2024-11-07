@@ -836,17 +836,11 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
         std::cout << "Raw pointer value: " << raw_val << "\n";
 
         if(is_struct_type(to_pointer_type(expr->type).subtype)) {
-            const struct_type2t& struct_type = to_struct_type(to_pointer_type(expr->type).subtype);
-            
-            // Try to get the actual struct pointer and dump it
             try {
                 const expr2t* raw_ptr = expr.get();
                 std::cout << "DEBUG: Got pointer: " << raw_ptr << "\n";
                 
                 if(raw_ptr != nullptr) {
-                    std::cout << "DEBUG: Attempting struct dump\n";
-                    
-                    // Define print function with varargs
                     auto print_fn = [](const char* fmt, ...) {
                         va_list args;
                         va_start(args, fmt);
@@ -855,27 +849,9 @@ std::string get_struct_values(const namespacet& ns, const expr2tc& expr) {
                         va_end(args);
                     };
                     
-                    // Verify struct layout matches what we expect
-                    struct RunPlanStep {
-                        char* client_id;
-                        char* device_type;
-                        char* duid;
-                        char* federated_identity;
-                        char* location_id;
-                        char* user_presence_exp;
-                    };
-
-                    std::cout << "DEBUG: RunPlanStep size: " << sizeof(RunPlanStep) << "\n";
-                    std::cout << "DEBUG: About to call __builtin_dump_struct\n";
-                    
-                    // Try to safely cast and dump
-                    if(const RunPlanStep* safe_ptr = reinterpret_cast<const RunPlanStep*>(raw_ptr)) {
-                        std::cout << "DEBUG: Safe cast successful\n";
-                        __builtin_dump_struct(safe_ptr, print_fn);
-                        std::cout << "DEBUG: Dump complete\n";
-                    } else {
-                        std::cout << "DEBUG: Safe cast failed\n";
-                    }
+                    std::cout << "DEBUG: About to dump struct at address " << raw_ptr << "\n";
+                    __builtin_dump_struct(raw_ptr, print_fn);  // HERE'S THE ACTUAL CALL
+                    std::cout << "DEBUG: Dump complete\n";
                 } else {
                     std::cout << "DEBUG: Invalid pointer value\n";
                 }
